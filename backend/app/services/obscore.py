@@ -135,7 +135,7 @@ class ObsCoreArchive:
         if not wanted:
             return ""
         values = ", ".join(f"'{w.upper().replace(chr(39), chr(39) * 2)}'" for w in wanted)
-        return f" AND UPPER({self.instrument_column}) IN ({values})"
+        return f" AND {self.instrument_column} IN ({values})"
 
     def build_adql(self, ra, dec, radius_deg, instruments, maxrec) -> str:
         return (
@@ -281,11 +281,67 @@ class EsoArchive(ObsCoreArchive):
 class MastArchive(ObsCoreArchive):
     key = "mast"
     label = "MAST (HST / JWST)"
-    tap_url = "https://vao.stsci.edu/caomtap/CaomTapService.svc"
-    table = "dbo.CaomObservation"
+    # MAST has moved its TAP service over time; the first endpoint that answers a TAP_SCHEMA
+    # query wins, and the observation table is discovered from that schema.
+    tap_candidates = (
+        "https://mast.stsci.edu/vo-tap/api/v0.1/caom/",
+        "https://vao.stsci.edu/caomtap/CaomTapService.svc",
+    )
+    tap_url = tap_candidates[0]
+    table_candidates = ("dbo.CaomObservation", "ivoa.obscore", "dbo.ObsPointing")
+    table = table_candidates[0]
     spatial = "point"
     instruments = ()
     collections = ("HST", "JWST")
+
+    def __init__(self, timeout: float = 60.0, tap_url: str | None = None):
+        super().__init__(timeout=timeout)
+        if tap_url:
+            self.tap_candidates = (tap_url,)
+            self.tap_url = tap_url
+        self._discovered = False
+
+    def list_tables(self) -> list[str]:
+        rows = self.run("SELECT table_name FROM TAP_SCHEMA.tables", maxrec=2000)
+        return [str(r.get("table_name")) for r in rows if r.get("table_name")]
+
+    def discover(self) -> None:
+        """Pick the first working endpoint and the observation table it exposes."""
+        if self._discovered:
+            return
+        errors = []
+        for url in self.tap_candidates:
+            self.tap_url = url
+            self._service = None
+            try:
+                tables = self.list_tables()
+            except Exception as exc:  # noqa: BLE001 - try the next endpoint
+                errors.append(f"{url}: {exc}")
+                continue
+            lower = {t.lower(): t for t in tables}
+            for cand in self.table_candidates:
+                if cand.lower() in lower:
+                    self.table = lower[cand.lower()]
+                    break
+            else:
+                log.warning(
+                    "MAST TAP at %s has none of %s; keeping %s",
+                    url,
+                    self.table_candidates,
+                    self.table,
+                )
+            log.info("MAST TAP: using %s table %s", url, self.table)
+            self._discovered = True
+            return
+        raise ConnectionError("No MAST TAP endpoint answered: " + "; ".join(errors))
+
+    def search(self, ra, dec, radius_deg, instruments=None, maxrec=MAX_ROWS):
+        t0 = time.monotonic()
+        try:
+            self.discover()
+        except Exception as exc:  # noqa: BLE001
+            return self._error(exc, t0)
+        return super().search(ra, dec, radius_deg, instruments, maxrec)
 
     def build_adql(self, ra, dec, radius_deg, instruments, maxrec):
         coll = ", ".join(f"'{c}'" for c in self.collections)
@@ -386,5 +442,12 @@ def get_searcher() -> ArchiveSearcher:
         if _searcher is None:
             from app.config import get_settings
 
-            _searcher = ArchiveSearcher(timeout=get_settings().remote_timeout * 3)
+            settings = get_settings()
+            timeout = settings.remote_timeout * 3
+            adapters: dict[str, ObsCoreArchive] = {
+                EsoArchive.key: EsoArchive(timeout=timeout),
+                MastArchive.key: MastArchive(timeout=timeout, tap_url=settings.mast_tap_url),
+                AlmaArchive.key: AlmaArchive(timeout=timeout),
+            }
+            _searcher = ArchiveSearcher(adapters=adapters)
         return _searcher

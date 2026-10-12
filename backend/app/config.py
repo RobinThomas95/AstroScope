@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     simbad_tap_url: str = Field(
         default="https://simbad.cds.unistra.fr/simbad/sim-tap", alias="ASTROSCOPE_SIMBAD_TAP_URL"
     )
+    mast_tap_url: str | None = Field(
+        default=None,
+        alias="ASTROSCOPE_MAST_TAP_URL",
+        description="Override the MAST TAP endpoint (default: auto-detect)",
+    )
     mocserver_url: str = Field(
         default="https://alasky.cds.unistra.fr/MocServer/query", alias="ASTROSCOPE_MOCSERVER_URL"
     )

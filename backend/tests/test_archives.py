@@ -153,7 +153,8 @@ class FakeEso(Canned, EsoArchive):
 
 
 class FakeMast(Canned, MastArchive):
-    pass
+    def discover(self):
+        self._discovered = True
 
 
 class FakeAlma(Canned, AlmaArchive):
@@ -183,7 +184,8 @@ def test_adapters_map_rows_and_build_adql():
     assert o.extra["em_res_power"] == 3000 and "scienceportal" in o.archive_url
     adql = s.adapters["eso"].adql[0]
     assert "INTERSECTS(CIRCLE('ICRS', 53.401500, -36.140400, 0.083333), s_region) = 1" in adql
-    assert "UPPER(instrument_name) IN ('MUSE', 'UVES', 'XSHOOTER')" in adql
+    assert "instrument_name IN ('MUSE', 'UVES', 'XSHOOTER')" in adql
+    assert "UPPER" not in adql
 
     m = mast.observations[0]
     assert m.collection == "JWST" and m.band == "1.5–4.4 µm" and m.preview_url.endswith(".jpg")
@@ -217,6 +219,41 @@ def test_intersects_falls_back_to_point_search():
     res = a.search(53.4, -36.1, 0.1)
     assert res.status == "ok" and res.count == 1
     assert "CONTAINS(POINT" in a.adql[-1]
+
+
+def test_mast_discovers_endpoint_and_table():
+    class Discovering(MastArchive):
+        def __init__(self):
+            super().__init__(timeout=1)
+            self.calls: list[tuple[str, str]] = []
+
+        def run(self, adql, maxrec=500):
+            self.calls.append((self.tap_url, adql))
+            if self.tap_url.startswith("https://mast.stsci.edu"):
+                raise ConnectionError("404")
+            if "TAP_SCHEMA" in adql:
+                return [{"table_name": "dbo.ObsPointing"}, {"table_name": "ivoa.ObsCore"}]
+            return [dict(MAST_ROW)]
+
+    a = Discovering()
+    res = a.search(53.4, -36.1, 0.1)
+    assert res.status == "ok" and res.count == 1
+    assert a.tap_url == "https://vao.stsci.edu/caomtap/CaomTapService.svc"
+    assert a.table == "ivoa.ObsCore"  # case-insensitive match, preferred over ObsPointing
+    assert "FROM ivoa.ObsCore WHERE" in a.calls[-1][1]
+    # discovery happens once
+    n = len(a.calls)
+    a.search(53.4, -36.1, 0.1)
+    assert len(a.calls) == n + 1
+
+
+def test_mast_reports_when_no_endpoint_answers():
+    class Dead(MastArchive):
+        def run(self, adql, maxrec=500):
+            raise ConnectionError("down")
+
+    res = Dead(timeout=1).search(1, 1, 0.1)
+    assert res.status == "error" and "No MAST TAP endpoint answered" in res.error
 
 
 # -- HI --------------------------------------------------------------------------------------
