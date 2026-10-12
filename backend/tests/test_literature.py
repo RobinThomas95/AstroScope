@@ -295,3 +295,54 @@ def test_real_client_pages_and_reports_400(monkeypatch):
     docs, n = c.search("abs:x", max_rows=10, fields="bibcode")
     assert n == 3 and [d["bibcode"] for d in docs] == ["b0", "b1", "b2"]
     assert calls[-1]["fl"] == "bibcode" and "Bearer" not in str(calls)
+
+
+def test_rank_models_prefers_newest_stable_flash():
+    from app.services.gemini import rank_models
+
+    names = [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3-flash",
+        "gemini-3-pro",
+        "gemini-3-flash-lite",
+        "gemini-embedding-001",
+        "gemini-2.5-flash-image",
+        "gemini-2.0-flash",
+        "gemini-3.1-flash",
+    ]
+    ranked = rank_models(names)
+    assert ranked[0] == "gemini-3.1-flash"
+    assert ranked[1] == "gemini-3-flash" and "gemini-3-flash-lite" in ranked
+    assert "gemini-embedding-001" not in ranked and "gemini-2.5-flash-image" not in ranked
+
+
+def test_client_resolves_auto_and_unavailable_models(monkeypatch):
+    from app.services import gemini as gm
+
+    monkeypatch.setattr(
+        gm.GeminiClient, "list_models", lambda self: ["gemini-3-flash", "gemini-3-pro"]
+    )
+    gm._model_cache.clear()
+    c = gm.GeminiClient("k1", "auto")
+    assert c.resolve_model() == "gemini-3-flash"
+    c2 = gm.GeminiClient("k1", "gemini-2.5-flash")  # gone -> best available
+    assert c2.resolve_model() == "gemini-3-flash"
+    c3 = gm.GeminiClient("k1", "gemini-3-pro")
+    assert c3.resolve_model() == "gemini-3-pro"
+
+
+def test_llm_models_endpoint(client, monkeypatch):
+    from app import config
+    from app.services import gemini as gm
+
+    monkeypatch.setattr(lit_router, "get_settings", lambda: config.Settings(_env_file=None))
+    monkeypatch.setattr(
+        gm.GeminiClient, "list_models", lambda self: ["gemini-3-flash", "gemini-embedding-001"]
+    )
+    gm._model_cache.clear()
+    body = client.get("/api/llm/models", headers={"X-Gemini-Key": "zz"}).json()
+    assert body["suggested"] == "gemini-3-flash" and body["all_models"] == [
+        "gemini-3-flash",
+        "gemini-embedding-001",
+    ]

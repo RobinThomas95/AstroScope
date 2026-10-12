@@ -34,9 +34,11 @@ export default function KeysDialog({ open, onClose }: Props) {
     setTesting(true);
     setMessage(null);
     try {
-      const list = await fetchLlmModels();
-      setModels(list);
-      setMessage(`Gemini key accepted. ${list.length} models available.`);
+      const res = await fetchLlmModels();
+      setModels(res.models);
+      setMessage(
+        `Gemini key accepted. ${res.models.length} text models available; "auto" will use ${res.suggested ?? "?"}.`,
+      );
     } catch (e: unknown) {
       setMessage(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -100,12 +102,14 @@ export default function KeysDialog({ open, onClose }: Props) {
             {testing ? "testing…" : "test"}
           </button>
         </div>
-        <label className="mb-1 block text-xs font-medium text-slate-300">Gemini model</label>
+        <label className="mb-1 block text-xs font-medium text-slate-300">
+          Gemini model <span className="font-normal text-slate-500">(leave empty or “auto” to pick the newest Flash model your key can use)</span>
+        </label>
         <input
           list="gemini-models"
           value={keys.geminiModel}
           onChange={(e) => setKeys({ ...keys, geminiModel: e.target.value })}
-          placeholder={status?.gemini_model ?? "gemini-2.5-flash"}
+          placeholder="auto"
           className="mb-3 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-xs text-slate-100"
         />
         <datalist id="gemini-models">{(models ?? []).map((m) => <option key={m} value={m} />)}</datalist>

@@ -6,6 +6,7 @@ import type {
   HISearch,
   KeyStatus,
   LiteratureResult,
+  LlmModels,
   RadioLine,
   ResolvedTarget,
   SpectralLine,
@@ -153,7 +154,7 @@ export function fetchKeyStatus(signal?: AbortSignal) {
 }
 
 export function fetchLlmModels(signal?: AbortSignal) {
-  return getJson<string[]>("/api/llm/models", signal, keyHeaders());
+  return getJson<LlmModels>("/api/llm/models", signal, keyHeaders());
 }
 
 export function fetchLiterature(

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.schemas.literature import KeyStatus, LiteratureResult, SynthesisResult
 from app.services.ads import get_literature_service
-from app.services.gemini import DEFAULT_MODEL, GeminiClient, GeminiError
+from app.services.gemini import DEFAULT_MODEL, GeminiClient, GeminiError, rank_models
 from app.services.synthesis import get_synthesis_service
 
 router = APIRouter(prefix="/api", tags=["literature"])
@@ -131,13 +131,21 @@ async def synthesis(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.get("/llm/models", response_model=list[str])
+class LlmModels(BaseModel):
+    models: list[str] = Field(description="Text-capable models, best first")
+    suggested: str | None
+    all_models: list[str]
+
+
+@router.get("/llm/models", response_model=LlmModels)
 async def llm_models(x_gemini_key: str | None = Header(default=None, alias="X-Gemini-Key")):
-    """Validate a Gemini key and list the models it can use."""
+    """Validate a Gemini key and list the models it can use, best first."""
     api_key, _ = _gemini_key(x_gemini_key)
     try:
-        return await run_in_threadpool(GeminiClient(api_key).list_models)
+        all_models = await run_in_threadpool(GeminiClient(api_key).available_models)
     except GeminiError as exc:
         raise HTTPException(
             status_code=401 if "rejected" in str(exc) else 502, detail=str(exc)
         ) from exc
+    ranked = rank_models(all_models)
+    return LlmModels(models=ranked, suggested=ranked[0] if ranked else None, all_models=all_models)

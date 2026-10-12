@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     )
 
     # Remote services
-    remote_timeout: float = Field(default=20.0, alias="ASTROSCOPE_REMOTE_TIMEOUT")
+    remote_timeout: float = Field(default=45.0, alias="ASTROSCOPE_REMOTE_TIMEOUT")
     cache_ttl: int = Field(default=3600, alias="ASTROSCOPE_CACHE_TTL")
 
     simbad_tap_url: str = Field(

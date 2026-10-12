@@ -28,6 +28,10 @@ const COLORS = ["#7dd3fc", "#fb923c", "#a3e635", "#f472b6", "#facc15", "#c084fc"
 interface Props {
   target: ResolvedTarget | null;
   request: SpectrumRequest | null;
+  /** Plots are only rendered while the tab is visible. */
+  active: boolean;
+  /** Velocity from an HI catalogue detection, used when the resolver has no redshift. */
+  hiVelocityKms: number | null;
 }
 
 interface Trace {
@@ -74,7 +78,7 @@ function normalise(x: number[], y: (number | null)[], lo: number, hi: number): (
   return peak ? y.map((v) => (v === null ? null : v / peak)) : y;
 }
 
-export default function SpectrumPanel({ target, request }: Props) {
+export default function SpectrumPanel({ target, request, active, hiVelocityKms }: Props) {
   const [radius, setRadius] = useState(3);
   const [radiusInput, setRadiusInput] = useState("3");
   const [method, setMethod] = useState<"sum" | "mean">("sum");
@@ -100,8 +104,24 @@ export default function SpectrumPanel({ target, request }: Props) {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const z = target?.kinematics.redshift ?? null;
-  const cz = target?.kinematics.velocity_kms ?? (z !== null ? z * C_KMS : null);
+  const [manualCz, setManualCz] = useState("");
+  const manual = parseFloat(manualCz);
+  const czSource = Number.isFinite(manual)
+    ? "manual"
+    : target?.kinematics.velocity_kms !== null && target?.kinematics.velocity_kms !== undefined
+      ? "resolver"
+      : hiVelocityKms !== null
+        ? "HI catalogue"
+        : null;
+  const cz =
+    czSource === "manual"
+      ? manual
+      : czSource === "resolver"
+        ? (target!.kinematics.velocity_kms as number)
+        : czSource === "HI catalogue"
+          ? hiVelocityKms
+          : null;
+  const z = cz !== null ? cz / C_KMS : null;
 
   // Line lists (optical: windowed to MUSE; radio: all, observed frequencies at z).
   useEffect(() => {
@@ -430,6 +450,7 @@ export default function SpectrumPanel({ target, request }: Props) {
             </select>
           </p>
           {products.length === 0 && <p className="text-slate-500">No FITS cube products listed for this observation.</p>}
+          {cz === null && <p className="text-amber-300">Systemic velocity unknown (resolver and HI catalogues gave none): enter cz below to mark the window containing the line.</p>}
           <ul className="space-y-0.5">
             {products.filter((p) => p.kind === "cube").slice(0, 12).map((p) => (
               <li key={p.url} className="flex flex-wrap items-center gap-2">
@@ -491,7 +512,12 @@ export default function SpectrumPanel({ target, request }: Props) {
           {!radioLines.length && <option value="CO(2-1)">CO(2-1)</option>}
         </select>
         <label className="flex items-center gap-1 text-slate-300">
-          <input type="checkbox" checked={relative} onChange={(e) => setRelative(e.target.checked)} disabled={xMode !== "velocity" || cz === null} /> relative to cz{cz !== null ? ` = ${cz.toFixed(0)}` : ""}
+          <input type="checkbox" checked={relative} onChange={(e) => setRelative(e.target.checked)} disabled={xMode !== "velocity" || cz === null} /> relative to cz
+        </label>
+        <label className="flex items-center gap-1 text-slate-400" title="Systemic velocity used for the redshift of lines and the relative velocity axis">
+          cz
+          <input type="number" step="1" value={manualCz} onChange={(e) => setManualCz(e.target.value)} placeholder={cz !== null ? cz.toFixed(0) : "unknown"} className="w-20 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-100" aria-label="Systemic velocity in km/s" />
+          km/s{czSource && czSource !== "manual" ? <span className="text-slate-600">({czSource})</span> : null}
         </label>
         <label className="flex items-center gap-1 text-slate-300" title="Scale each trace to its own peak inside the window: shapes compare, fluxes do not">
           <input type="checkbox" checked={normalised} onChange={(e) => setNormalised(e.target.checked)} disabled={xMode !== "velocity"} /> normalise amplitudes
@@ -527,7 +553,7 @@ export default function SpectrumPanel({ target, request }: Props) {
         <p key={`${t.id}-${i}`} className="text-amber-300">{t.label}: {w}</p>
       )))}
 
-      {figure && (
+      {figure && active && (
         <Plot
           data={figure.data}
           layout={figure.layout}

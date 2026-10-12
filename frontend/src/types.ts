@@ -372,3 +372,9 @@ export interface KeyStatus {
   gemini_server_key: boolean;
   gemini_model: string;
 }
+
+export interface LlmModels {
+  models: string[];
+  suggested: string | null;
+  all_models: string[];
+}

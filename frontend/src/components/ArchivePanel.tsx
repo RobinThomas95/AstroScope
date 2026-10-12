@@ -645,10 +645,15 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
 
           {/* Spectrum and Literature stay mounted so their traces / results survive tab switches. */}
           <div className={tab === "spectrum" ? "" : "hidden"}>
-            <SpectrumPanel target={target} request={spectrumRequest} />
+            <SpectrumPanel
+              target={target}
+              request={spectrumRequest}
+              active={tab === "spectrum" && !collapsed}
+              hiVelocityKms={hiDetections.find((d) => d.velocity_kms !== null)?.velocity_kms ?? null}
+            />
           </div>
           <div className={tab === "literature" ? "" : "hidden"}>
-            <LiteraturePanel target={target} onOpenKeys={onOpenKeys} />
+            <LiteraturePanel target={target} onOpenKeys={onOpenKeys} active={tab === "literature" && !collapsed} />
           </div>
 
           {tab === "hi" && hi && (

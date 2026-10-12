@@ -10,6 +10,8 @@ const Plot = createPlotlyComponent(Plotly);
 interface Props {
   target: ResolvedTarget | null;
   onOpenKeys: () => void;
+  /** Plots are only rendered while the tab is visible (Plotly cannot size a hidden element). */
+  active: boolean;
 }
 
 function cleanName(n: string): string {
@@ -30,7 +32,7 @@ function searchNames(target: ResolvedTarget): string[] {
   return [...names].slice(0, 8);
 }
 
-export default function LiteraturePanel({ target, onOpenKeys }: Props) {
+export default function LiteraturePanel({ target, onOpenKeys, active }: Props) {
   const [lit, setLit] = useState<LiteratureResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -221,10 +223,6 @@ export default function LiteraturePanel({ target, onOpenKeys }: Props) {
               </button>
             )}
           </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {yearFigure && <Plot data={yearFigure.data} layout={yearFigure.layout} config={{ displaylogo: false, responsive: true }} style={{ width: "100%" }} useResizeHandler />}
-            {citeFigure && <Plot data={citeFigure.data} layout={citeFigure.layout} config={{ displaylogo: false, responsive: true }} style={{ width: "100%" }} useResizeHandler />}
-          </div>
           <div className="flex flex-wrap items-center gap-1">
             <span className="text-slate-500">keywords:</span>
             {lit.metrics.keywords.slice(0, 20).map((k) => (
@@ -234,49 +232,61 @@ export default function LiteraturePanel({ target, onOpenKeys }: Props) {
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-slate-200">
-              Papers{facilityFilter.size ? ` mentioning ${[...facilityFilter].join(" / ")}` : ""} ({filtered.length})
-            </span>
-            <select value={sortKey} onChange={(e) => setSortKey(e.target.value as "citations" | "year")} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200" aria-label="Sort papers">
-              <option value="citations">most cited</option>
-              <option value="year">newest</option>
-            </select>
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_420px]">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-slate-200">
+                  Papers{facilityFilter.size ? ` mentioning ${[...facilityFilter].join(" / ")}` : ""} ({filtered.length})
+                </span>
+                <select value={sortKey} onChange={(e) => setSortKey(e.target.value as "citations" | "year")} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200" aria-label="Sort papers">
+                  <option value="citations">most cited</option>
+                  <option value="year">newest</option>
+                </select>
+              </div>
+              <table className="w-full text-left">
+                <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-1 py-1">Year</th>
+                    <th className="px-1 py-1">Title</th>
+                    <th className="px-1 py-1">First author</th>
+                    <th className="px-1 py-1">Journal</th>
+                    <th className="px-1 py-1 text-right">Cites</th>
+                    <th className="px-1 py-1">Facilities</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((p) => (
+                    <tr key={p.bibcode} className="border-t border-slate-800/60 align-top hover:bg-slate-800/40">
+                      <td className="px-1 py-1 font-mono text-[11px]">{p.year ?? "—"}</td>
+                      <td className="px-1 py-1">
+                        <a href={p.ads_url} target="_blank" rel="noreferrer" className="text-sky-300 hover:underline" title={p.abstract ?? ""}>
+                          {p.title ?? p.bibcode}
+                        </a>
+                        {!p.refereed && <span className="ml-1 rounded bg-slate-800 px-1 text-[10px] text-slate-400">{p.doctype ?? "non-refereed"}</span>}
+                      </td>
+                      <td className="px-1 py-1 text-slate-300">{p.first_author ?? "—"}</td>
+                      <td className="px-1 py-1 text-slate-400">{p.journal ?? "—"}</td>
+                      <td className="px-1 py-1 text-right font-mono text-[11px]">{p.citation_count}</td>
+                      <td className="px-1 py-1 text-slate-400">{p.facilities.slice(0, 5).join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filtered.length > 30 && (
+                <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-1 text-slate-400 underline">
+                  {showAll ? "show fewer" : `show all ${filtered.length}`}
+                </button>
+              )}
+            </div>
+            <div className="min-w-0 xl:sticky xl:top-0 xl:self-start">
+              {active && yearFigure && (
+                <Plot data={yearFigure.data} layout={yearFigure.layout} config={{ displaylogo: false, responsive: true }} style={{ width: "100%" }} useResizeHandler />
+              )}
+              {active && citeFigure && (
+                <Plot data={citeFigure.data} layout={citeFigure.layout} config={{ displaylogo: false, responsive: true }} style={{ width: "100%" }} useResizeHandler />
+              )}
+            </div>
           </div>
-          <table className="w-full text-left">
-            <thead className="text-[10px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-1 py-1">Year</th>
-                <th className="px-1 py-1">Title</th>
-                <th className="px-1 py-1">First author</th>
-                <th className="px-1 py-1">Journal</th>
-                <th className="px-1 py-1 text-right">Cites</th>
-                <th className="px-1 py-1">Facilities</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((p) => (
-                <tr key={p.bibcode} className="border-t border-slate-800/60 align-top hover:bg-slate-800/40">
-                  <td className="px-1 py-1 font-mono text-[11px]">{p.year ?? "—"}</td>
-                  <td className="px-1 py-1">
-                    <a href={p.ads_url} target="_blank" rel="noreferrer" className="text-sky-300 hover:underline" title={p.abstract ?? ""}>
-                      {p.title ?? p.bibcode}
-                    </a>
-                    {!p.refereed && <span className="ml-1 rounded bg-slate-800 px-1 text-[10px] text-slate-400">{p.doctype ?? "non-refereed"}</span>}
-                  </td>
-                  <td className="px-1 py-1 text-slate-300">{p.first_author ?? "—"}</td>
-                  <td className="px-1 py-1 text-slate-400">{p.journal ?? "—"}</td>
-                  <td className="px-1 py-1 text-right font-mono text-[11px]">{p.citation_count}</td>
-                  <td className="px-1 py-1 text-slate-400">{p.facilities.slice(0, 5).join(", ")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {filtered.length > 30 && (
-            <button type="button" onClick={() => setShowAll((v) => !v)} className="self-start text-slate-400 underline">
-              {showAll ? "show fewer" : `show all ${filtered.length}`}
-            </button>
-          )}
 
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
             <div className="flex flex-wrap items-center gap-3">
