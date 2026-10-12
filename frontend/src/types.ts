@@ -16,6 +16,9 @@ export interface Kinematics {
   velocity_kms: number | null;
   velocity_err_kms: number | null;
   measurement_type: string | null;
+  quality: string | null;
+  ned_redshift: number | null;
+  ned_velocity_kms: number | null;
   source: string | null;
 }
 
@@ -136,6 +139,7 @@ export interface ArchiveObservation {
   dec_deg: number | null;
   separation_arcmin: number | null;
   s_region: string | null;
+  covers_target: boolean | null;
   access_url: string | null;
   preview_url: string | null;
   archive_url: string | null;
@@ -249,4 +253,8 @@ export interface SpectrumRequest {
   datalinkUrl: string;
   label: string;
   obsId: string | null;
+  /** Cube centre from ObsCore (s_ra, s_dec), used when the target is outside the footprint. */
+  cubeRa: number | null;
+  cubeDec: number | null;
+  coversTarget: boolean | null;
 }

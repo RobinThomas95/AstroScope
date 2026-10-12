@@ -68,6 +68,12 @@ export default function TargetCard({ target }: Props) {
           <p className="text-[11px] text-slate-500">
             from {k.source}
             {k.measurement_type ? ` (measured as ${k.measurement_type === "z" ? "redshift" : "velocity"})` : ""}
+            {k.quality ? ` · SIMBAD quality ${k.quality}` : ""}
+          </p>
+        )}
+        {k.ned_velocity_kms !== null && k.source === "SIMBAD" && (
+          <p className="text-[11px] text-slate-500">
+            NED: cz = {k.ned_velocity_kms.toFixed(1)} km/s (z = {k.ned_redshift?.toFixed(6)})
           </p>
         )}
       </Section>

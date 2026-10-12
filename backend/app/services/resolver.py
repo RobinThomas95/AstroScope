@@ -282,9 +282,26 @@ class TargetResolver:
     @staticmethod
     def _kinematics(simbad_row, ned_row) -> Kinematics:
         k = Kinematics()
-        if simbad_row and (
-            simbad_row.get("rvz_redshift") is not None or simbad_row.get("rvz_radvel") is not None
-        ):
+        simbad_ok = bool(
+            simbad_row
+            and (
+                simbad_row.get("rvz_redshift") is not None
+                or simbad_row.get("rvz_radvel") is not None
+            )
+        )
+        ned_ok = bool(
+            ned_row and (ned_row.get("Redshift") is not None or ned_row.get("Velocity") is not None)
+        )
+        # SIMBAD quality flags run A (best) to E; D/E values can be hundreds of km/s off.
+        simbad_poor = simbad_ok and str(simbad_row.get("rvz_qual") or "").upper() in ("D", "E")
+
+        if ned_ok:
+            z = ned_row.get("Redshift")
+            v = ned_row.get("Velocity")
+            k.ned_redshift = float(z) if z is not None else float(v) / C_KMS
+            k.ned_velocity_kms = float(v) if v is not None else float(z) * C_KMS
+
+        if simbad_ok and not (simbad_poor and ned_ok):
             z = simbad_row.get("rvz_redshift")
             v = simbad_row.get("rvz_radvel")
             err = simbad_row.get("rvz_err")
@@ -292,6 +309,7 @@ class TargetResolver:
             k.redshift = float(z) if z is not None else (v / C_KMS if v is not None else None)
             k.velocity_kms = float(v) if v is not None else (z * C_KMS if z is not None else None)
             k.measurement_type = rtype
+            k.quality = simbad_row.get("rvz_qual")
             if err is not None:
                 if rtype == "z":
                     k.redshift_err = float(err)
@@ -301,12 +319,11 @@ class TargetResolver:
                     k.redshift_err = float(err) / C_KMS
             k.source = "SIMBAD"
             return k
-        if ned_row and (ned_row.get("Redshift") is not None or ned_row.get("Velocity") is not None):
-            z = ned_row.get("Redshift")
-            v = ned_row.get("Velocity")
-            k.redshift = float(z) if z is not None else float(v) / C_KMS
-            k.velocity_kms = float(v) if v is not None else float(z) * C_KMS
-            k.source = "NED"
+        if ned_ok:
+            k.redshift = k.ned_redshift
+            k.velocity_kms = k.ned_velocity_kms
+            k.source = "NED" + (" (SIMBAD value has quality D/E)" if simbad_poor else "")
+            k.quality = simbad_row.get("rvz_qual") if simbad_poor else None
         return k
 
     def _morphology(self, simbad_row, ned_row, warnings) -> Morphology:

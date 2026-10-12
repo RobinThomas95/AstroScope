@@ -197,3 +197,29 @@ def test_lines_and_hi_profile_endpoints(client):
 
 def test_health_reports_spectra():
     assert TestClient(main.app).get("/api/health").json()["modules"]["spectra"] is True
+
+
+def test_empty_soda_answer_is_explained(monkeypatch):
+    from app.services.muse import SodaCutoutClient
+
+    class Row:
+        def _get_soda_resource(self):
+            return object()
+
+        def processed(self, circle=None, band=None):
+            return io.BytesIO(b"")
+
+    class DL:
+        def bysemantics(self, s):
+            return [Row()]
+
+    from pyvo.dal import adhoc
+
+    from app.services import muse as muse_mod
+
+    monkeypatch.setattr(
+        adhoc.DatalinkResults, "from_result_url", staticmethod(lambda url, session=None: DL())
+    )
+    with pytest.raises(ValueError, match="outside this cube"):
+        SodaCutoutClient()._fetch("https://archive.eso.org/datalink/links?ID=x", 1, 1, 3, None)
+    assert muse_mod

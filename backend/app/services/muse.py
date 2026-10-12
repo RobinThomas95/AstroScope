@@ -84,6 +84,12 @@ class SodaCutoutClient:
             len(data),
             time.monotonic() - t0,
         )
+        if not data:
+            raise ValueError(
+                "SODA returned no data (HTTP 204): the requested position lies outside this "
+                "cube's footprint. Extract at the cube centre or pick a cube that covers "
+                "the target."
+            )
         if not data.startswith(FITS_MAGIC):
             head = data[:200].decode("utf-8", errors="replace")
             raise ValueError(f"SODA service did not return FITS: {head}")

@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 from app.schemas.archives import ArchiveObservation, ArchiveResult, ArchiveSearch
 from app.services.simbad import _TimeoutSession
+from app.services.stcs import region_contains
 from app.services.tableutils import first, rows_to_dicts
 
 log = logging.getLogger(__name__)
@@ -208,6 +209,7 @@ class ObsCoreArchive:
         s_dec = _float(first(r, "s_dec", "dec", "targetDec"))
         mjd = _float(first(r, "t_min"))
         release = _str(first(r, "obs_release_date", "t_obs_release"))
+        region = _str(first(r, "s_region"))
         obs = ArchiveObservation(
             archive=self.key,
             collection=_str(first(r, "obs_collection", "collection")),
@@ -227,7 +229,8 @@ class ObsCoreArchive:
             ra_deg=s_ra,
             dec_deg=s_dec,
             separation_arcmin=angular_sep_arcmin(ra, dec, s_ra, s_dec),
-            s_region=_str(first(r, "s_region")),
+            s_region=region,
+            covers_target=region_contains(region, ra, dec),
             access_url=_str(first(r, "access_url", "dataURL", "datalink_url")),
             preview_url=_str(first(r, "preview_url", "preview_html", "jpegURL")),
             proposal_id=_str(first(r, "proposal_id", "proposal", "prog_id")),

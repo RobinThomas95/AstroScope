@@ -27,6 +27,9 @@ class Kinematics(BaseModel):
     measurement_type: str | None = Field(
         default=None, description="SIMBAD rvz_type: 'v' (velocity) or 'z' (redshift)"
     )
+    quality: str | None = Field(default=None, description="SIMBAD rvz_qual (A best .. E)")
+    ned_redshift: float | None = Field(default=None, description="NED redshift, for comparison")
+    ned_velocity_kms: float | None = None
     source: str | None = None
 
 

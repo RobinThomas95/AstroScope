@@ -39,6 +39,7 @@ export function parseHIText(text: string, name: string): UploadedHI {
 
 export default function SpectrumPanel({ target, request }: Props) {
   const [radius, setRadius] = useState(3);
+  const [position, setPosition] = useState<"target" | "cube">("target");
   const [radiusInput, setRadiusInput] = useState("3");
   const [method, setMethod] = useState<"sum" | "mean">("sum");
   const [spectrum, setSpectrum] = useState<Spectrum1D | null>(null);
@@ -56,13 +57,22 @@ export default function SpectrumPanel({ target, request }: Props) {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Default to the cube centre when the target lies outside this cube's footprint.
+  useEffect(() => {
+    setPosition(request?.coversTarget === false && request.cubeRa !== null ? "cube" : "target");
+  }, [request]);
+
+  const useCube = position === "cube" && request?.cubeRa !== null && request?.cubeDec !== null;
+  const extractRa = useCube ? (request!.cubeRa as number) : target?.coordinates.ra_deg;
+  const extractDec = useCube ? (request!.cubeDec as number) : target?.coordinates.dec_deg;
+
   const z = target?.kinematics.redshift ?? null;
   const cz = target?.kinematics.velocity_kms ?? (z !== null ? z * C_KMS : null);
 
   // Extract whenever the request, aperture or method changes.
   useEffect(() => {
     abortRef.current?.abort();
-    if (!request || !target) {
+    if (!request || !target || extractRa === undefined || extractDec === undefined) {
       setSpectrum(null);
       return;
     }
@@ -73,8 +83,8 @@ export default function SpectrumPanel({ target, request }: Props) {
     fetchMuseSpectrum(
       {
         datalinkUrl: request.datalinkUrl,
-        ra: target.coordinates.ra_deg,
-        dec: target.coordinates.dec_deg,
+        ra: extractRa,
+        dec: extractDec,
         radiusArcsec: radius,
         method,
       },
@@ -87,7 +97,7 @@ export default function SpectrumPanel({ target, request }: Props) {
       })
       .finally(() => !ac.signal.aborted && setLoading(false));
     return () => ac.abort();
-  }, [request, target, radius, method]);
+  }, [request, target, radius, method, extractRa, extractDec]);
 
   // Line list for the spectrum's window.
   useEffect(() => {
@@ -281,6 +291,21 @@ export default function SpectrumPanel({ target, request }: Props) {
     <div className="flex flex-col gap-2 px-3 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-3">
         <span className="font-medium text-slate-100">{request.label}</span>
+        <select
+          value={position}
+          onChange={(e) => setPosition(e.target.value as "target" | "cube")}
+          className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200"
+          aria-label="Extraction position"
+          title={request.coversTarget === false ? "The target lies outside this cube's footprint" : ""}
+        >
+          <option value="target">
+            at target{request.coversTarget === false ? " (outside footprint!)" : ""}
+          </option>
+          <option value="cube" disabled={request.cubeRa === null}>
+            at cube centre
+            {request.cubeRa !== null ? ` (${request.cubeRa.toFixed(4)}, ${request.cubeDec?.toFixed(4)})` : ""}
+          </option>
+        </select>
         <label className="flex items-center gap-1 text-slate-400">
           aperture r
           <input

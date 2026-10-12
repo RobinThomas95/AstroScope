@@ -25,6 +25,9 @@ class ArchiveObservation(BaseModel):
     dec_deg: float | None = None
     separation_arcmin: float | None = None
     s_region: str | None = Field(default=None, description="Footprint as STC-S")
+    covers_target: bool | None = Field(
+        default=None, description="Whether the footprint contains the searched position"
+    )
     access_url: str | None = Field(default=None, description="Data access / DataLink URL")
     preview_url: str | None = None
     archive_url: str | None = Field(default=None, description="Human-facing archive page")

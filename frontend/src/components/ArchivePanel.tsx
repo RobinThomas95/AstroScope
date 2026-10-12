@@ -112,10 +112,17 @@ function Links({ o, onSpectrum }: { o: ArchiveObservation; onSpectrum?: (r: Spec
               datalinkUrl: o.access_url as string,
               label: `MUSE ${o.obs_id ?? ""} ${o.date_obs?.slice(0, 10) ?? ""}`.trim(),
               obsId: o.obs_id,
+              cubeRa: o.ra_deg,
+              cubeDec: o.dec_deg,
+              coversTarget: o.covers_target,
             })
           }
           className="rounded border border-emerald-700 px-1.5 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-900/40"
-          title="Extract a 1-D spectrum at the target position"
+          title={
+            o.covers_target === false
+              ? "Target is outside this cube: the spectrum is extracted at the cube centre"
+              : "Extract a 1-D spectrum at the target position"
+          }
         >
           spectrum
         </button>
@@ -152,6 +159,11 @@ function ObsRow({
         {o.public === false && (
           <span className="ml-1 rounded bg-amber-900/50 px-1 text-[10px] text-amber-300">
             proprietary
+          </span>
+        )}
+        {o.covers_target === true && (
+          <span className="ml-1 rounded bg-emerald-900/50 px-1 text-[10px] text-emerald-300" title="Footprint contains the target position">
+            on target
           </span>
         )}
       </td>

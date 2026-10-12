@@ -32,6 +32,17 @@ def test_parse_polygon_circle_and_union():
     assert parse_stcs(None) == [] and parse_stcs("garbage 1 2") == []
 
 
+def test_region_contains_point():
+    from app.services.stcs import region_contains
+
+    assert region_contains(MUSE_POLY, 53.4015, -36.1404) is True
+    assert region_contains(MUSE_POLY, 53.5, -36.1404) is False
+    assert region_contains(ALMA_REGION, 53.4015, -36.1404) is True
+    assert region_contains(ALMA_REGION, 53.42, -36.1404) is False
+    assert region_contains("POLYGON ICRS 359.9 -0.1 0.1 -0.1 0.1 0.1 359.9 0.1", 0.0, 0.0) is True
+    assert region_contains(None, 1, 1) is None and region_contains("junk", 1, 1) is None
+
+
 def test_regions_to_moc_fits_contains_target():
     import os
     import tempfile
@@ -182,6 +193,8 @@ def test_adapters_map_rows_and_build_adql():
     assert o.date_obs.startswith("2017-09-04") and o.public is True
     assert o.separation_arcmin == pytest.approx(0.0, abs=0.2)
     assert o.extra["em_res_power"] == 3000 and "scienceportal" in o.archive_url
+    assert o.covers_target is True
+    assert alma.observations[0].covers_target is True
     adql = s.adapters["eso"].adql[0]
     assert "INTERSECTS(CIRCLE('ICRS', 53.401500, -36.140400, 0.083333), s_region) = 1" in adql
     assert "instrument_name IN ('MUSE', 'UVES', 'XSHOOTER')" in adql

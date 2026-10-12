@@ -114,3 +114,25 @@ def test_cache_hit_marks_cached(resolver):
 def test_empty_query_rejected(resolver):
     with pytest.raises(ValueError):
         resolver.resolve("   ")
+
+
+def test_poor_simbad_redshift_defers_to_ned(settings):
+    from tests.conftest import NGC1365_BASIC
+
+    poor = dict(
+        NGC1365_BASIC,
+        rvz_redshift=0.005091,
+        rvz_radvel=1522.2,
+        rvz_err=0.0005,
+        rvz_type="z",
+        rvz_qual="D",
+    )
+    r = TargetResolver(settings=settings, simbad=FakeSimbad(basic=poor), ned=FakeNed())
+    t = r.resolve("NGC 1365")
+    assert t.kinematics.source.startswith("NED")
+    assert t.kinematics.velocity_kms == pytest.approx(1636.0)
+    assert t.kinematics.quality == "D"
+    assert t.kinematics.ned_redshift == pytest.approx(0.005457)
+    # with a good SIMBAD value, SIMBAD still wins but NED is reported alongside
+    good = TargetResolver(settings=settings, simbad=FakeSimbad(), ned=FakeNed()).resolve("NGC 1365")
+    assert good.kinematics.source == "SIMBAD" and good.kinematics.ned_velocity_kms == 1636
