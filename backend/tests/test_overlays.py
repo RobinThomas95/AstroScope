@@ -148,3 +148,26 @@ def test_union_failure_falls_back_to_largest_member(monkeypatch):
     res = client.get("/api/overlays/alma/moc")
     assert res.status_code == 200
     assert res.content == a
+
+
+def test_fetch_moc_degrades_order_on_413():
+    import httpx
+
+    a, _ = _cone_fits(10, 10, 1)
+    calls = []
+
+    class Client(MocServerClient):
+        def _get(self, params, ok_statuses=()):
+            calls.append(dict(params))
+            if params.get("order", 99) > 10:
+                return httpx.Response(413, text="<html>Request Entity Too Large</html>")
+            return httpx.Response(200, content=a, headers={"content-type": "application/fits"})
+
+    c = Client()
+    data = c.fetch_moc_fits("CDS/C/MUSE")
+    assert data == a
+    assert [p.get("order", "full") for p in calls] == ["full", 12, 11, 10]
+    # cached afterwards
+    calls.clear()
+    assert c.fetch_moc_fits("CDS/C/MUSE") == a
+    assert calls == []

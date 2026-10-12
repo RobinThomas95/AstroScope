@@ -87,7 +87,9 @@ def main(argv: list[str]) -> None:
             continue
         for r in records:
             print(f"  {r.id}  ({r.title}, sky_fraction={r.sky_fraction})")
-            for params in ({"ID": r.id, "get": "moc"}, {"ID": r.id, "get": "moc", "fmt": "fits"}):
+            attempts = [{"ID": r.id, "get": "moc"}]
+            attempts += [{"ID": r.id, "get": "moc", "order": o} for o in (12, 11, 10, 9, 8)]
+            for params in attempts:
                 try:
                     res = httpx.get(MOCSERVER_URL, params=params, timeout=60, follow_redirects=True)
                 except Exception as exc:  # noqa: BLE001
@@ -102,7 +104,7 @@ def main(argv: list[str]) -> None:
                 if res.content.startswith(FITS_MAGIC):
                     print(describe_fits(res.content))
                     break
-                else:
+                if res.status_code != 413:
                     print("    body:", res.text[:300].replace("\n", " "))
 
 

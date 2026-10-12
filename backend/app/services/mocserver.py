@@ -21,6 +21,9 @@ log = logging.getLogger(__name__)
 
 MOCSERVER_URL = "https://alasky.cds.unistra.fr/MocServer/query"
 FITS_MAGIC = b"SIMPLE  ="
+# Orders to fall back to when a MOC is too large (413). Order 11 cells are ~1.7 arcmin,
+# order 8 cells ~13.7 arcmin.
+DEGRADE_ORDERS = (12, 11, 10, 9, 8)
 
 
 @dataclass
@@ -59,10 +62,13 @@ class MocServerClient:
         self._lock = threading.Lock()
 
     # -- HTTP ----------------------------------------------------------------------------------
-    def _get(self, params: dict[str, str]) -> httpx.Response:
+    def _get(
+        self, params: dict[str, str | int], ok_statuses: tuple[int, ...] = ()
+    ) -> httpx.Response:
         with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
             res = client.get(self.base_url, params=params, headers={"User-Agent": "AstroScope/0.1"})
-            res.raise_for_status()
+            if res.status_code not in ok_statuses:
+                res.raise_for_status()
             return res
 
     def search(self, expression: str) -> list[MocRecord]:
@@ -88,16 +94,30 @@ class MocServerClient:
             if hit and hit[0] > now:
                 return hit[1]
         data: bytes | None = None
-        for params in (
-            {"ID": record_id, "get": "moc"},
-            {"ID": record_id, "get": "moc", "fmt": "fits"},
-        ):
-            res = self._get(params)
+        # The server answers 413 when a MOC is too large to deliver at full resolution; the
+        # ``order`` parameter asks for a degraded (coarser) version, so step down until it fits.
+        attempts: list[dict[str, str | int]] = [{"ID": record_id, "get": "moc"}]
+        attempts += [{"ID": record_id, "get": "moc", "order": o} for o in DEGRADE_ORDERS]
+        for params in attempts:
+            res = self._get(params, ok_statuses=(413,))
+            if res.status_code == 413:
+                log.info("MOCServer: %s too large at %s", record_id, params.get("order", "full"))
+                continue
             if res.content.startswith(FITS_MAGIC):
                 data = res.content
+                if "order" in params:
+                    log.info(
+                        "MOCServer: %s delivered degraded to order %s", record_id, params["order"]
+                    )
                 break
+            raise ValueError(
+                f"MOCServer returned {res.headers.get('content-type')} instead of a FITS MOC "
+                f"for {record_id!r}"
+            )
         if data is None:
-            raise ValueError(f"MOCServer did not return a FITS MOC for {record_id!r}")
+            raise ValueError(
+                f"MOCServer refused to deliver {record_id!r} even at order {DEGRADE_ORDERS[-1]}"
+            )
         with self._lock:
             self._moc_cache[record_id] = (now + self.cache_ttl, data)
         return data
