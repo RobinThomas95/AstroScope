@@ -25,6 +25,59 @@ function instrumentKey(o: ArchiveObservation): string {
   return o.instrument ?? o.collection ?? o.archive.toUpperCase();
 }
 
+/** Telescope / mission a row belongs to (first grouping level). */
+function missionKey(o: ArchiveObservation): string {
+  if (o.archive === "eso") return "ESO VLT";
+  if (o.archive === "alma") return "ALMA";
+  return o.collection ?? o.archive.toUpperCase();
+}
+
+/** Instrument without its observing mode (second grouping level). */
+function instrumentBase(o: ArchiveObservation): string {
+  if (o.archive === "alma") {
+    const band = o.extra?.band_list;
+    return band ? `Band ${band}` : "ALMA";
+  }
+  return instrumentKey(o).split("/")[0];
+}
+
+function instrumentMode(o: ArchiveObservation): string | null {
+  const parts = instrumentKey(o).split("/");
+  return parts.length > 1 ? parts.slice(1).join("/") : null;
+}
+
+const MISSION_ORDER = ["JWST", "HST", "ESO VLT", "ALMA"];
+
+function missionRank(name: string): number {
+  const i = MISSION_ORDER.indexOf(name);
+  return i === -1 ? MISSION_ORDER.length : i;
+}
+
+function dateSpan(rows: ArchiveObservation[]): string {
+  const dates = rows.map((o) => o.date_obs).filter((d): d is string => !!d).sort();
+  if (!dates.length) return "";
+  const a = dates[0].slice(0, 10);
+  const b = dates[dates.length - 1].slice(0, 10);
+  return a === b ? a : `${a} → ${b}`;
+}
+
+function totalExposure(rows: ArchiveObservation[]): string {
+  const s = rows.reduce((acc, o) => acc + (o.exptime_s ?? 0), 0);
+  if (!s) return "";
+  return s >= 3600 ? `${(s / 3600).toFixed(1)} h` : `${Math.round(s)} s`;
+}
+
+interface InstrumentGroup {
+  name: string;
+  rows: ArchiveObservation[];
+}
+
+interface MissionGroup {
+  name: string;
+  count: number;
+  instruments: InstrumentGroup[];
+}
+
 function Links({ o }: { o: ArchiveObservation }) {
   const link = (href: string | null, label: string) =>
     href ? (
@@ -46,6 +99,116 @@ function Links({ o }: { o: ArchiveObservation }) {
   );
 }
 
+function ObsRow({ o, showMission }: { o: ArchiveObservation; showMission?: boolean }) {
+  const mode = instrumentMode(o);
+  return (
+    <tr className="border-t border-slate-800/60 align-top hover:bg-slate-800/40">
+      <td className="px-2 py-1 whitespace-nowrap">
+        <span className="font-medium text-slate-100">
+          {showMission ? instrumentKey(o) : instrumentBase(o)}
+        </span>
+        {!showMission && mode && (
+          <span className="ml-1 rounded bg-slate-800 px-1 text-[10px] text-slate-400">{mode}</span>
+        )}
+        {showMission && o.collection && o.collection !== o.instrument && (
+          <span className="ml-1 text-slate-500">{o.collection}</span>
+        )}
+        {o.public === false && (
+          <span className="ml-1 rounded bg-amber-900/50 px-1 text-[10px] text-amber-300">
+            proprietary
+          </span>
+        )}
+      </td>
+      <td className="max-w-[14rem] truncate px-2 py-1 font-mono text-[11px] text-slate-300" title={o.obs_id ?? ""}>
+        {o.obs_id ?? "—"}
+        {o.target_name && <div className="truncate text-slate-500">{o.target_name}</div>}
+      </td>
+      <td className="px-2 py-1 font-mono text-[11px] text-slate-300">
+        {o.date_obs ? o.date_obs.replace("T", " ").replace("Z", "") : "—"}
+      </td>
+      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.exptime_s, 0)}</td>
+      <td className="px-2 py-1 whitespace-nowrap text-slate-300">{o.band ?? "—"}</td>
+      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.resolution_arcsec, 2)}</td>
+      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.separation_arcmin, 2)}</td>
+      <td className="px-2 py-1 text-slate-400">
+        {o.dataproduct_type ?? "—"}
+        {o.calib_level !== null && <span className="text-slate-600"> L{o.calib_level}</span>}
+      </td>
+      <td className="px-2 py-1">
+        <Links o={o} />
+      </td>
+    </tr>
+  );
+}
+
+function GroupRows({
+  group,
+  open,
+  onToggle,
+}: {
+  group: MissionGroup;
+  open: Set<string>;
+  onToggle: (key: string) => void;
+}) {
+  const missionOpen = open.has(group.name);
+  return (
+    <>
+      <tr className="border-t border-slate-700 bg-slate-800/60">
+        <td colSpan={9} className="px-2 py-1">
+          <button
+            type="button"
+            onClick={() => onToggle(group.name)}
+            className="flex w-full items-center gap-2 text-left"
+          >
+            <span className="w-3 text-slate-400">{missionOpen ? "▾" : "▸"}</span>
+            <span className="font-semibold text-white">{group.name}</span>
+            <span className="text-slate-400">
+              {group.count} observation{group.count === 1 ? "" : "s"} ·{" "}
+              {group.instruments.map((i) => `${i.name} ${i.rows.length}`).join(", ")}
+            </span>
+          </button>
+        </td>
+      </tr>
+      {missionOpen &&
+        group.instruments.map((inst) => {
+          const key = `${group.name}/${inst.name}`;
+          const instOpen = open.has(key);
+          return (
+            <GroupInstrument key={key} inst={inst} open={instOpen} onToggle={() => onToggle(key)} />
+          );
+        })}
+    </>
+  );
+}
+
+function GroupInstrument({
+  inst,
+  open,
+  onToggle,
+}: {
+  inst: InstrumentGroup;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <tr className="border-t border-slate-800/60 bg-slate-900/60">
+        <td colSpan={9} className="px-2 py-0.5 pl-6">
+          <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 text-left">
+            <span className="w-3 text-slate-500">{open ? "▾" : "▸"}</span>
+            <span className="font-medium text-slate-100">{inst.name}</span>
+            <span className="text-slate-500">
+              {inst.rows.length} · {dateSpan(inst.rows)}
+              {totalExposure(inst.rows) ? ` · ${totalExposure(inst.rows)} total` : ""}
+            </span>
+          </button>
+        </td>
+      </tr>
+      {open && inst.rows.map((o, i) => <ObsRow key={`${o.archive}-${o.obs_id ?? i}-${i}`} o={o} />)}
+    </>
+  );
+}
+
 export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: Props) {
   const [tab, setTab] = useState<Tab>("obs");
   const [archives, setArchives] = useState<ArchiveSearch | null>(null);
@@ -56,6 +219,8 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
   const [instrumentFilter, setInstrumentFilter] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [collapsed, setCollapsed] = useState(false);
+  const [grouped, setGrouped] = useState(true);
+  const [open, setOpen] = useState<Set<string>>(new Set());
   const [radiusInput, setRadiusInput] = useState(String(radiusArcmin));
   const abortRef = useRef<AbortController | null>(null);
 
@@ -108,6 +273,56 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
     };
     return rows.sort(cmp[sortKey]);
   }, [allObs, instrumentFilter, sortKey]);
+
+  const groups = useMemo<MissionGroup[]>(() => {
+    const byMission = new Map<string, Map<string, ArchiveObservation[]>>();
+    for (const o of observations) {
+      const m = missionKey(o);
+      const i = instrumentBase(o);
+      if (!byMission.has(m)) byMission.set(m, new Map());
+      const inst = byMission.get(m)!;
+      if (!inst.has(i)) inst.set(i, []);
+      inst.get(i)!.push(o);
+    }
+    return [...byMission.entries()]
+      .map(([name, inst]) => ({
+        name,
+        count: [...inst.values()].reduce((n, r) => n + r.length, 0),
+        instruments: [...inst.entries()]
+          .map(([iname, rows]) => ({ name: iname, rows }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => missionRank(a.name) - missionRank(b.name) || a.name.localeCompare(b.name));
+  }, [observations]);
+
+  // Missions start open; instrument groups start open only when the whole table is small.
+  useEffect(() => {
+    const next = new Set<string>();
+    for (const g of groups) {
+      next.add(g.name);
+      if (observations.length <= 25) for (const i of g.instruments) next.add(`${g.name}/${i.name}`);
+    }
+    setOpen(next);
+  }, [groups, observations.length]);
+
+  const toggleOpen = (key: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  const setAll = (expand: boolean) =>
+    setOpen(() => {
+      const next = new Set<string>();
+      if (expand)
+        for (const g of groups) {
+          next.add(g.name);
+          for (const i of g.instruments) next.add(`${g.name}/${i.name}`);
+        }
+      return next;
+    });
 
   const toggleInstrument = (name: string) =>
     setInstrumentFilter((prev) => {
@@ -225,10 +440,24 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
                     clear
                   </button>
                 )}
+                <label className="ml-auto flex cursor-pointer items-center gap-1 text-slate-300">
+                  <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
+                  group by telescope
+                </label>
+                {grouped && (
+                  <>
+                    <button type="button" onClick={() => setAll(true)} className="text-slate-400 underline">
+                      expand all
+                    </button>
+                    <button type="button" onClick={() => setAll(false)} className="text-slate-400 underline">
+                      collapse all
+                    </button>
+                  </>
+                )}
                 <select
                   value={sortKey}
                   onChange={(e) => setSortKey(e.target.value as SortKey)}
-                  className="ml-auto rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200"
+                  className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200"
                   aria-label="Sort observations"
                 >
                   <option value="date">newest first</option>
@@ -252,42 +481,18 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
                   </tr>
                 </thead>
                 <tbody>
-                  {observations.map((o, i) => (
-                    <tr
-                      key={`${o.archive}-${o.obs_id ?? i}`}
-                      className="border-t border-slate-800/60 align-top hover:bg-slate-800/40"
-                    >
-                      <td className="px-2 py-1 whitespace-nowrap">
-                        <span className="font-medium text-slate-100">{instrumentKey(o)}</span>
-                        {o.collection && o.collection !== o.instrument && (
-                          <span className="ml-1 text-slate-500">{o.collection}</span>
-                        )}
-                        {o.public === false && (
-                          <span className="ml-1 rounded bg-amber-900/50 px-1 text-[10px] text-amber-300">
-                            proprietary
-                          </span>
-                        )}
-                      </td>
-                      <td className="max-w-[14rem] truncate px-2 py-1 font-mono text-[11px] text-slate-300" title={o.obs_id ?? ""}>
-                        {o.obs_id ?? "—"}
-                        {o.target_name && <div className="truncate text-slate-500">{o.target_name}</div>}
-                      </td>
-                      <td className="px-2 py-1 font-mono text-[11px] text-slate-300">
-                        {o.date_obs ? o.date_obs.replace("T", " ").replace("Z", "") : "—"}
-                      </td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.exptime_s, 0)}</td>
-                      <td className="px-2 py-1 whitespace-nowrap text-slate-300">{o.band ?? "—"}</td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.resolution_arcsec, 2)}</td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.separation_arcmin, 2)}</td>
-                      <td className="px-2 py-1 text-slate-400">
-                        {o.dataproduct_type ?? "—"}
-                        {o.calib_level !== null && <span className="text-slate-600"> L{o.calib_level}</span>}
-                      </td>
-                      <td className="px-2 py-1">
-                        <Links o={o} />
-                      </td>
-                    </tr>
-                  ))}
+                  {grouped
+                    ? groups.map((g) => (
+                        <GroupRows
+                          key={g.name}
+                          group={g}
+                          open={open}
+                          onToggle={toggleOpen}
+                        />
+                      ))
+                    : observations.map((o, i) => (
+                        <ObsRow key={`${o.archive}-${o.obs_id ?? i}`} o={o} showMission />
+                      ))}
                   {observations.length === 0 && !loadingObs && (
                     <tr>
                       <td colSpan={9} className="px-3 py-3 text-slate-500">
