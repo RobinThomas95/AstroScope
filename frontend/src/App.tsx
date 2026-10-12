@@ -15,16 +15,31 @@ export default function App() {
   const [radiusArcmin, setRadiusArcmin] = useState(5);
   const abortRef = useRef<AbortController | null>(null);
 
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
+
+  // The catalog is static, so a failure is almost always the backend still starting up:
+  // retry with backoff, and let the user retry by hand.
   useEffect(() => {
     const ac = new AbortController();
-    fetchSurveyCatalog(ac.signal)
-      .then(setCatalog)
-      .catch((err: unknown) => {
-        if (ac.signal.aborted) return;
-        setCatalogError(err instanceof Error ? err.message : String(err));
-      });
-    return () => ac.abort();
-  }, []);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = (attempt: number) => {
+      fetchSurveyCatalog(ac.signal)
+        .then((c) => {
+          setCatalog(c);
+          setCatalogError(null);
+        })
+        .catch((err: unknown) => {
+          if (ac.signal.aborted) return;
+          setCatalogError(err instanceof Error ? err.message : String(err));
+          if (attempt < 6) timer = setTimeout(() => load(attempt + 1), 1500 * (attempt + 1));
+        });
+    };
+    load(0);
+    return () => {
+      ac.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [catalogAttempt]);
 
   const search = useCallback(async (query: string) => {
     abortRef.current?.abort();
@@ -96,8 +111,22 @@ export default function App() {
               </div>
             </>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-slate-500">
-              {catalogError ? `Could not load survey catalog: ${catalogError}` : "Loading survey catalog…"}
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-slate-500">
+              {catalogError ? (
+                <>
+                  <span>Could not load the survey catalog: {catalogError}</span>
+                  <span className="text-xs">Is the backend running on port 8000? Retrying…</span>
+                  <button
+                    type="button"
+                    onClick={() => setCatalogAttempt((n) => n + 1)}
+                    className="rounded border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800"
+                  >
+                    Retry now
+                  </button>
+                </>
+              ) : (
+                "Loading survey catalog…"
+              )}
             </div>
           )}
         </section>
