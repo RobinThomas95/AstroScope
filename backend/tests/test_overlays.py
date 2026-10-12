@@ -126,3 +126,25 @@ def test_surveys_catalog_points_overlays_at_proxy(monkeypatch):
     client = _client(monkeypatch, FakeMocServer())
     body = client.get("/api/surveys").json()
     assert all(o["moc_url"].startswith("/api/overlays/") for o in body["overlays"])
+
+
+def test_union_failure_falls_back_to_largest_member(monkeypatch):
+    from app.services import mocserver
+
+    a, fa = _cone_fits(10, 10, 1)
+    fake = FakeMocServer(
+        records={
+            "ID=CDS/C/*ALMA*": [
+                {"ID": "CDS/C/PHANGS-ALMA", "moc_sky_fraction": fa},
+                {"ID": "CDS/C/ALMA-test", "moc_sky_fraction": 1e-6},
+            ]
+        },
+        fits={"CDS/C/PHANGS-ALMA": a, "CDS/C/ALMA-test": b"SIMPLE  = garbage" + b" " * 100},
+    )
+    monkeypatch.setattr(
+        mocserver, "union_fits_mocs", lambda blobs: (_ for _ in ()).throw(ValueError("bad MOC"))
+    )
+    client = _client(monkeypatch, fake)
+    res = client.get("/api/overlays/alma/moc")
+    assert res.status_code == 200
+    assert res.content == a

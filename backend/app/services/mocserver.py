@@ -153,7 +153,19 @@ class MocServerClient:
                 log.warning("Skipping MOC %s: %s", rid, exc)
         if not blobs:
             raise ValueError("None of the MOCs could be fetched")
-        data = blobs[0] if len(blobs) == 1 else union_fits_mocs(blobs)
+        if len(blobs) == 1:
+            data = blobs[0]
+        else:
+            try:
+                data = union_fits_mocs(blobs)
+            except Exception as exc:  # noqa: BLE001 - serve the largest member rather than nothing
+                log.error(
+                    "Union of %s failed (%s: %s); serving the largest single MOC instead",
+                    ", ".join(record_ids),
+                    type(exc).__name__,
+                    exc,
+                )
+                data = max(blobs, key=len)
         with self._lock:
             self._moc_cache[key] = (now + self.cache_ttl, data)
         return data
