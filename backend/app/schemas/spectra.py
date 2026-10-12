@@ -15,7 +15,7 @@ class SpectralLine(BaseModel):
 
 class Spectrum1D(BaseModel):
     wavelength_A: list[float]
-    flux: list[float]
+    flux: list[float | None] = Field(description="null where every spaxel is NaN (cube edges)")
     error: list[float | None] | None = None
     flux_unit: str
     wavelength_unit: str = "Angstrom"

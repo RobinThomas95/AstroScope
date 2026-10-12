@@ -222,7 +222,7 @@ def extract_spectrum(
         }
         return Spectrum1D(
             wavelength_A=[float(x) for x in wl],
-            flux=[None if not np.isfinite(f) else float(f) for f in flux],  # type: ignore[list-item]
+            flux=[None if not np.isfinite(f) else float(f) for f in flux],
             error=error,
             flux_unit=unit_out,
             method=method,

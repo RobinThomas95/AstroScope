@@ -26,6 +26,7 @@ def make_cube(with_stat=True, extname="DATA"):
     cube[:, NY // 2, NX // 2] = 10.0
     cube[k, NY // 2, NX // 2] = 100.0
     cube[5, 0, 0] = np.nan
+    cube[-1, :, :] = np.nan  # MUSE cubes end with an all-NaN channel
     hdr = fits.Header()
     hdr["BUNIT"] = "10**(-20)*erg/s/cm**2/Angstrom"
     hdr["OBJECT"] = "NGC1365"
@@ -56,6 +57,7 @@ def test_extract_sum_spectrum_with_errors():
     # 20 background spaxels at 1 + central at 10 (continuum) / 100 (line)
     assert spec.flux[0] == pytest.approx(30.0)
     assert spec.flux[k] == pytest.approx(120.0)
+    assert spec.flux[-1] is None and spec.error[-1] == 0.0
     assert spec.error[0] == pytest.approx(np.sqrt(21 * 0.25))
     assert spec.flux_unit.startswith("10**(-20)")
     assert spec.method == "sum" and spec.source["object"] == "NGC1365"
@@ -149,6 +151,7 @@ def test_spectrum_endpoint(client):
     assert res.status_code == 200
     body = res.json()
     assert body["n_spaxels"] == 21 and body["flux"][0] == pytest.approx(30.0)
+    assert body["flux"][-1] is None  # all-NaN channel serialises as null
     assert body["source"]["datalink_url"] == url
     assert svc.cutouts.calls[0][1] == pytest.approx(1.5)  # aperture + 1 arcsec margin
     # cached on repeat
