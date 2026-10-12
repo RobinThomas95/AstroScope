@@ -78,6 +78,72 @@ function normalise(x: number[], y: (number | null)[], lo: number, hi: number): (
   return peak ? y.map((v) => (v === null ? null : v / peak)) : y;
 }
 
+function productLabel(base: string, p: CubeProduct): string {
+  const win = p.freq_center_ghz ? `${p.freq_center_ghz.toFixed(2)} GHz` : `spw${p.spw ?? "?"}`;
+  return `${base} ${win}`;
+}
+
+const PRODUCT_KIND_LABEL: Record<string, string> = {
+  cube: "Science cubes",
+  auxiliary: "Auxiliary cubes (mask, primary beam, psf, residual…)",
+  calibrator: "Calibrator cubes (check source, phase, bandpass…)",
+};
+
+function ProductList({ products, request, onExtract }: { products: CubeProduct[]; request: SpectrumRequest; onExtract: (p: CubeProduct) => void }) {
+  const [showAll, setShowAll] = useState(false);
+  const science = products.filter((p) => p.kind === "cube");
+  const auxiliary = products.filter((p) => p.kind === "auxiliary");
+  const calibrator = products.filter((p) => p.kind === "calibrator");
+  const packages = products.filter((p) => p.kind === "package");
+  const others = products.length - science.length - auxiliary.length - calibrator.length - packages.length;
+  const groups: [string, CubeProduct[]][] = [["cube", science]];
+  if (showAll || science.length === 0) groups.push(["auxiliary", auxiliary], ["calibrator", calibrator]);
+  const hidden = auxiliary.length + calibrator.length;
+  return (
+    <div className="space-y-1">
+      {science.length === 0 && (
+        <p className="text-amber-300">
+          No science cube (pbcor/image) is listed for {request.label}.
+          {hidden > 0 && ` ${hidden} auxiliary or calibrator cube${hidden === 1 ? "" : "s"} listed below can still be extracted but are not the target's flux.`}
+          {packages.length > 0 && ` ${packages.length} packaged tar product${packages.length === 1 ? "" : "s"} listed (not extractable here; download from the ALMA archive).`}
+          {others > 0 && ` ${others} other FITS file${others === 1 ? "" : "s"}.`}
+        </p>
+      )}
+      {groups.map(([kind, list]) =>
+        list.length === 0 ? null : (
+          <div key={kind}>
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">{PRODUCT_KIND_LABEL[kind]}</p>
+            <ul className="space-y-0.5">
+              {list.slice(0, 24).map((p) => (
+                <li key={p.url} className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded px-1 ${p.contains_line ? "bg-emerald-900/50 text-emerald-300" : "bg-slate-800 text-slate-400"}`} title={p.freq_approx ? "window estimated from the centre frequency in the file name" : undefined}>
+                    {p.contains_line ? "contains line" : p.contains_line === false ? "other window" : "window ?"}
+                    {p.freq_approx && p.contains_line !== null ? " ~" : ""}
+                  </span>
+                  <span className="font-mono text-[11px] text-slate-200">{p.name}</span>
+                  <span className="text-slate-500">
+                    spw {p.spw ?? "?"}
+                    {p.freq_center_ghz ? ` · ${p.freq_center_ghz.toFixed(3)} GHz` : ""}
+                    {p.freq_min_ghz ? ` · ${p.freq_min_ghz.toFixed(2)}–${p.freq_max_ghz?.toFixed(2)} GHz${p.freq_approx ? " (est.)" : ""}` : ""} · {p.size_mb ?? "?"} MB
+                  </span>
+                  <button type="button" onClick={() => onExtract(p)} className="rounded border border-emerald-700 px-1.5 py-0.5 text-emerald-300 hover:bg-emerald-900/40">
+                    extract
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ),
+      )}
+      {science.length > 0 && hidden > 0 && (
+        <button type="button" onClick={() => setShowAll((v) => !v)} className="text-slate-400 underline hover:text-slate-200">
+          {showAll ? "hide" : "show"} {hidden} auxiliary/calibrator cube{hidden === 1 ? "" : "s"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function SpectrumPanel({ target, request, active, hiVelocityKms }: Props) {
   const [radius, setRadius] = useState(3);
   const [radiusInput, setRadiusInput] = useState("3");
@@ -229,7 +295,7 @@ export default function SpectrumPanel({ target, request, active, hiVelocityKms }
           ac.signal,
         );
         if (!ac.signal.aborted) {
-          addTrace({ id: product.url, label: `${req.label} spw${product.spw ?? "?"}`, kind: "radio", spectrum, color: "", position: pos });
+          addTrace({ id: product.url, label: productLabel(req.label, product), kind: "radio", spectrum, color: "", position: pos });
           setXMode("velocity");
           setNormalised(true);
         }
@@ -449,24 +515,8 @@ export default function SpectrumPanel({ target, request, active, hiVelocityKms }
               ))}
             </select>
           </p>
-          {products.length === 0 && <p className="text-slate-500">No FITS cube products listed for this observation.</p>}
           {cz === null && <p className="text-amber-300">Systemic velocity unknown (resolver and HI catalogues gave none): enter cz below to mark the window containing the line.</p>}
-          <ul className="space-y-0.5">
-            {products.filter((p) => p.kind === "cube").slice(0, 12).map((p) => (
-              <li key={p.url} className="flex flex-wrap items-center gap-2">
-                <span className={`rounded px-1 ${p.contains_line ? "bg-emerald-900/50 text-emerald-300" : "bg-slate-800 text-slate-400"}`}>
-                  {p.contains_line ? "contains line" : p.contains_line === false ? "other window" : "window ?"}
-                </span>
-                <span className="font-mono text-[11px] text-slate-200">{p.name}</span>
-                <span className="text-slate-500">
-                  spw {p.spw ?? "?"}{p.freq_min_ghz ? ` · ${p.freq_min_ghz.toFixed(2)}–${p.freq_max_ghz?.toFixed(2)} GHz` : ""} · {p.size_mb ?? "?"} MB
-                </span>
-                <button type="button" onClick={() => void extractAlma(productsFor, p, position)} className="rounded border border-emerald-700 px-1.5 py-0.5 text-emerald-300 hover:bg-emerald-900/40">
-                  extract
-                </button>
-              </li>
-            ))}
-          </ul>
+          <ProductList products={products} request={productsFor} onExtract={(p) => void extractAlma(productsFor, p, position)} />
         </div>
       )}
 

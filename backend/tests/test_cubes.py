@@ -115,12 +115,75 @@ def test_list_products_orders_cubes_first(monkeypatch):
         adhoc.DatalinkResults, "from_result_url", staticmethod(lambda url, session=None: rows)
     )
     prods = list_products("https://almascience.org/datalink/sync?ID=uid://A001/X1")
-    assert [p.kind for p in prods][:3] == ["cube", "cube", "cube"]
+    assert [p.kind for p in prods] == ["cube", "cube", "image", "auxiliary", "package"]
     assert prods[0].spw == 23 and prods[0].size_mb == 320.0 and "pbcor" in prods[0].name
-    assert all(p.kind != "other" or "tar" not in p.name for p in prods)
-    assert len(prods) == 4  # tarball excluded
+    assert prods[-1].name.endswith(".tar")  # tarball kept, flagged as a package
     with pytest.raises(ValueError):
         list_products("https://evil.example/datalink")
+
+
+@pytest.mark.parametrize(
+    "name, kind, spw, centre, intent",
+    [
+        (
+            "member.uid___A001_X12f_X321.ari_l.J0334-4008_chk.spw0_229397MHz.12m.cube.I.mask.fits.gz",
+            "calibrator",
+            0,
+            229.397,
+            "chk",
+        ),
+        (
+            "member.uid___A001_X12f_X321.ari_l.NGC_1365_sci.spw1_230960MHz.12m.cube.I.pbcor.fits",
+            "cube",
+            1,
+            230.960,
+            "sci",
+        ),
+        (
+            "member.uid___A001_X12f_X321.ari_l.NGC_1365_sci.spw1_230960MHz.12m.cube.I.pb.fits.gz",
+            "auxiliary",
+            1,
+            230.960,
+            "sci",
+        ),
+        ("member.uid___A001_X1.NGC_1365_sci.spw25.cube.I.pbcor.fits", "cube", 25, None, "sci"),
+        ("member.uid___A001_X1.NGC_1365_sci.spw25.mfs.I.pbcor.fits", "image", 25, None, "sci"),
+        ("2017.1.00886.L_uid___A001_X1_001_of_001.tar", "package", None, None, None),
+    ],
+)
+def test_classify_product_names(name, kind, spw, centre, intent):
+    assert cubes.classify_product(name) == (kind, spw, centre, intent)
+
+
+def test_extract_from_gzipped_product(tmp_path):
+    import gzip
+
+    data, k, _ = make_alma_cube()
+    path = tmp_path / "abcd1234-x_sci.spw1_230960MHz.cube.I.pbcor.fits.gz"
+    path.write_bytes(gzip.compress(data))
+    spec = cubes.extract_from_file(path, RA0, DEC0, 0.6)
+    assert spec.flux[k] == pytest.approx(1.0)
+    assert spec.source["product"] == "x_sci.spw1_230960MHz.cube.I.pbcor.fits.gz"
+    with pytest.raises(ValueError, match="not a FITS file"):
+        extract_spectrum(b"<html>error</html>", RA0, DEC0, 0.6)
+
+
+def test_window_matches_by_centre_frequency():
+    ranges = {23: (85.3, 87.2), 25: (229.0, 230.9)}
+    local = CubeProduct(
+        "a_sci.spw0_229397MHz.cube.I.pbcor.fits", "u", 1.0, 0, "cube", None, None, 229.397
+    )
+    assert spectra_router._window_for(local, ranges) == ((229.0, 230.9), False)
+    unknown = CubeProduct(
+        "a_sci.spw1_250000MHz.cube.I.pbcor.fits", "u", 1.0, 1, "cube", None, None, 250.0
+    )
+    rng, approx = spectra_router._window_for(unknown, ranges)
+    assert approx and rng[0] == pytest.approx(249.05) and rng[1] == pytest.approx(250.95)
+    by_index = CubeProduct("a.spw23.cube.I.pbcor.fits", "u", 1.0, 23, "cube")
+    assert spectra_router._window_for(by_index, ranges) == ((85.3, 87.2), False)
+    assert spectra_router._window_for(
+        CubeProduct("a.cube.fits", "u", 1.0, None, "cube"), ranges
+    ) == (None, False)
 
 
 def test_cube_store_caps_size_and_caches(tmp_path, monkeypatch):
@@ -194,6 +257,15 @@ def client(monkeypatch, tmp_path):
                 23,
                 "cube",
             ),
+            CubeProduct(
+                "b_sci.spw0_229397MHz.12m.cube.I.mask.fits.gz",
+                "https://almascience.org/dataPortal/b_sci.spw0_229397MHz.12m.cube.I.mask.fits.gz",
+                55.0,
+                0,
+                "auxiliary",
+                freq_center_ghz=229.397,
+                intent="sci",
+            ),
         ],
     )
     assert spectra_router  # routers import cubes module functions at call time
@@ -212,7 +284,9 @@ def test_products_endpoint_marks_line_window(client):
     assert res.status_code == 200
     body = res.json()
     assert body[0]["spw"] == 25 and body[0]["contains_line"] is True
-    assert body[1]["contains_line"] is False and body[1]["freq_min_ghz"] == 85.3
+    assert body[1]["kind"] == "auxiliary" and body[1]["contains_line"] is True
+    assert body[1]["freq_min_ghz"] == 229.0 and body[1]["freq_approx"] is False
+    assert body[2]["contains_line"] is False and body[2]["freq_min_ghz"] == 85.3
     assert (
         client.get(
             "/api/cubes/products", params={"datalink_url": "https://x.example/d"}

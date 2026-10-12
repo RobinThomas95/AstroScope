@@ -120,7 +120,7 @@ async def cube_products(
     ranges = _parse_spw_ranges(spw_ranges)
     out = []
     for p in products:
-        rng = ranges.get(p.spw) if p.spw is not None else None
+        rng, approx = _window_for(p, ranges)
         contains = None
         if rng and line_ghz:
             contains = rng[0] <= line_ghz <= rng[1]
@@ -132,13 +132,37 @@ async def cube_products(
                 spw=p.spw,
                 kind=p.kind,
                 semantics=p.semantics,
+                intent=p.intent,
+                freq_center_ghz=p.freq_center_ghz,
                 freq_min_ghz=rng[0] if rng else None,
                 freq_max_ghz=rng[1] if rng else None,
+                freq_approx=approx,
                 contains_line=contains,
             )
         )
-    out.sort(key=lambda o: (o.contains_line is not True, o.kind != "cube", o.size_mb or 0))
+    out.sort(key=lambda o: (o.contains_line is not True, *cubes.product_sort_key(o)))
     return out
+
+
+_DEFAULT_HALF_WIDTH_GHZ = 0.9375  # half of the widest ALMA spectral window (1.875 GHz)
+
+
+def _window_for(
+    p: cubes.CubeProduct, ranges: dict[int, tuple[float, float]]
+) -> tuple[tuple[float, float] | None, bool]:
+    """Frequency window of a product: the ObsCore spw range holding its centre frequency when the
+    name carries one (pipeline names use local spw indices, so indices cannot be matched), else
+    the range with the same spw number; else an approximate window around the centre."""
+    if p.freq_center_ghz is not None:
+        for lo, hi in ranges.values():
+            if lo <= p.freq_center_ghz <= hi:
+                return (lo, hi), False
+        widths = sorted(hi - lo for lo, hi in ranges.values() if hi > lo)
+        half = widths[len(widths) // 2] / 2 if widths else _DEFAULT_HALF_WIDTH_GHZ
+        return (p.freq_center_ghz - half, p.freq_center_ghz + half), True
+    if p.spw is not None and p.spw in ranges:
+        return ranges[p.spw], False
+    return None, False
 
 
 @router.get("/spectrum/cube", response_model=Spectrum1D)

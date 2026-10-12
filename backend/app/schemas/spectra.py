@@ -55,8 +55,13 @@ class CubeProductOut(BaseModel):
     spw: int | None
     kind: str
     semantics: str | None = None
+    intent: str | None = Field(default=None, description="sci, chk, ph, bp... from the file name")
+    freq_center_ghz: float | None = Field(default=None, description="Centre frequency in the name")
     freq_min_ghz: float | None = None
     freq_max_ghz: float | None = None
+    freq_approx: bool = Field(
+        default=False, description="Window estimated from the centre frequency, not from ObsCore"
+    )
     contains_line: bool | None = Field(
         default=None, description="Whether the requested line falls in this window"
     )

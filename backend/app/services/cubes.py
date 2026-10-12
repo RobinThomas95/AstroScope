@@ -3,6 +3,7 @@ size cap with a disk cache, and extract an aperture spectrum with a frequency ax
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import logging
 import os
@@ -33,7 +34,23 @@ C_KM_S = 299792.458
 DEFAULT_MAX_MB = 600.0
 CACHE_DIR = Path(tempfile.gettempdir()) / "astroscope-cubes"
 CACHE_LIMIT_BYTES = 6 * 1024**3
-_SPW_RE = re.compile(r"spw(\d+)", re.IGNORECASE)
+# ".spw25." (archive product IDs) or "spw0_229397MHz" (ARI-L / pipeline product names, where the
+# number is a local window index and the centre frequency follows it)
+_SPW_RE = re.compile(r"spw(\d+)(?:_(\d+(?:\.\d+)?)(MHz|GHz))?", re.IGNORECASE)
+_INTENT_RE = re.compile(r"_(sci|chk|ph|bp|amp|flux|pol|cont)[._]", re.IGNORECASE)
+_CAL_INTENTS = {"chk", "ph", "bp", "amp", "flux", "pol"}
+_AUX_TOKENS = (
+    ".mask.",
+    ".pb.",
+    ".psf.",
+    ".residual.",
+    ".model.",
+    ".alpha.",
+    ".sumwt.",
+    ".weight.",
+    ".flux.",
+)
+_KIND_RANK = {"cube": 0, "image": 1, "auxiliary": 2, "calibrator": 3, "other": 4, "package": 5}
 
 
 def _allowed(url: str) -> bool:
@@ -47,13 +64,44 @@ class CubeProduct:
     url: str
     size_mb: float | None
     spw: int | None
-    kind: str  # cube | image | other
+    kind: str  # cube | image | auxiliary | calibrator | package | other
     semantics: str | None = None
     content_type: str | None = None
+    freq_center_ghz: float | None = None
+    intent: str | None = None
+
+
+def classify_product(name: str) -> tuple[str, int | None, float | None, str | None]:
+    """(kind, spw, centre frequency in GHz, intent) from an ALMA/ESO product file name."""
+    lname = name.lower()
+    m = _SPW_RE.search(name)
+    spw = int(m.group(1)) if m else None
+    centre = None
+    if m and m.group(2):
+        centre = float(m.group(2)) / (1e3 if m.group(3).lower() == "mhz" else 1.0)
+    im = _INTENT_RE.search(name)
+    intent = im.group(1).lower() if im else None
+    if lname.endswith((".tar", ".tar.gz", ".tgz", ".zip")):
+        kind = "package"
+    elif "fits" not in lname:
+        kind = "other"
+    elif "cube" in lname:
+        if intent in _CAL_INTENTS:
+            kind = "calibrator"
+        elif any(tok in lname for tok in _AUX_TOKENS):
+            kind = "auxiliary"
+        else:
+            kind = "cube"
+    elif any(k in lname for k in (".mfs.", "cont", "mom0", "mom1", "pbcor.fits")):
+        kind = "image"
+    else:
+        kind = "other"
+    return kind, spw, centre, intent
 
 
 def list_products(datalink_url: str, timeout: float = 60.0) -> list[CubeProduct]:
-    """FITS products listed by a DataLink document, cubes first."""
+    """Products listed by a DataLink document: science cubes first, then images, auxiliary
+    cubes (mask/pb/psf/...), calibrator cubes and packaged tarballs (kind "package")."""
     from pyvo.dal.adhoc import DatalinkResults
 
     from app.services.simbad import _TimeoutSession
@@ -69,30 +117,33 @@ def list_products(datalink_url: str, timeout: float = 60.0) -> list[CubeProduct]
         name = os.path.basename(urlparse(url).path)
         ctype = (row.content_type or "").lower()
         lname = name.lower()
-        if "fits" not in ctype and not lname.endswith((".fits", ".fits.gz")):
+        is_fits = "fits" in ctype or lname.endswith((".fits", ".fits.gz", ".fits.fz"))
+        kind, spw, centre, intent = classify_product(name)
+        if not is_fits and kind != "package":
             continue
-        if "cube" in lname:
-            kind = "cube"
-        elif any(k in lname for k in (".mfs.", "cont", "mom0", "mom1", "pbcor.fits")):
-            kind = "image"
-        else:
+        if is_fits and kind == "package":
             kind = "other"
-        m = _SPW_RE.search(name)
         size = row.content_length
         products.append(
             CubeProduct(
                 name=name,
                 url=url,
                 size_mb=round(float(size) / 1e6, 1) if size else None,
-                spw=int(m.group(1)) if m else None,
+                spw=spw,
                 kind=kind,
                 semantics=row.semantics,
                 content_type=row.content_type,
+                freq_center_ghz=centre,
+                intent=intent,
             )
         )
-    # cubes first, primary-beam-corrected first, then by size
-    products.sort(key=lambda p: (p.kind != "cube", "pbcor" not in p.name.lower(), p.size_mb or 0))
+    products.sort(key=product_sort_key)
     return products
+
+
+def product_sort_key(p: CubeProduct) -> tuple:
+    """Science cubes first, primary-beam-corrected first, then by size."""
+    return (_KIND_RANK.get(p.kind, 9), "pbcor" not in p.name.lower(), p.size_mb or 0)
 
 
 class CubeStore:
@@ -165,6 +216,8 @@ def extract_from_file(
     path: Path, ra: float, dec: float, radius_arcsec: float, method: str = "sum"
 ) -> Spectrum1D:
     data = path.read_bytes()
+    if data[:2] == b"\x1f\x8b":  # gzipped FITS (.fits.gz products)
+        data = gzip.decompress(data)
     spec = extract_spectrum(data, ra, dec, radius_arcsec, method=method)
     spec.frequency_ghz = frequency_axis_ghz(spec.wavelength_A)
     spec.source["product"] = path.name.split("-", 1)[-1]

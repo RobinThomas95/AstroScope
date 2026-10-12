@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import io
 import logging
 import threading
@@ -206,6 +207,11 @@ def extract_spectrum(
     from astropy.wcs.utils import proj_plane_pixel_scales
 
     warnings: list[str] = []
+    if fits_bytes[:2] == b"\x1f\x8b":  # gzipped FITS
+        fits_bytes = gzip.decompress(fits_bytes)
+    if not fits_bytes.startswith(b"SIMPLE"):
+        head = fits_bytes[:120].decode("latin-1", "replace").strip()
+        raise ValueError(f"Payload is not a FITS file (starts with: {head!r})")
     with fits.open(io.BytesIO(fits_bytes), memmap=False) as hdul:
         data_hdu, stat_hdu = _find_cube(hdul)
         cube = np.asarray(data_hdu.data, dtype=float)

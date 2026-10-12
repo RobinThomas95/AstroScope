@@ -270,8 +270,11 @@ export interface CubeProduct {
   spw: number | null;
   kind: string;
   semantics: string | null;
+  intent: string | null;
+  freq_center_ghz: number | null;
   freq_min_ghz: number | null;
   freq_max_ghz: number | null;
+  freq_approx: boolean;
   contains_line: boolean | null;
 }
 
