@@ -75,8 +75,7 @@ class SodaCutoutClient:
         circle = u.Quantity([ra, dec, radius_arcsec / 3600.0], u.deg)
         band = u.Quantity([band_A[0] * 1e-10, band_A[1] * 1e-10], u.m) if band_A else None
         t0 = time.monotonic()
-        stream = row.processed(circle=circle, band=band)
-        data = stream.read()
+        data = self._request_with_retry(row, circle, band)
         log.info(
             "SODA cutout %s r=%.1f arcsec -> %d bytes in %.1fs",
             datalink_url,
@@ -94,6 +93,35 @@ class SodaCutoutClient:
             head = data[:200].decode("utf-8", errors="replace")
             raise ValueError(f"SODA service did not return FITS: {head}")
         return data
+
+    def _request_with_retry(self, row, circle, band, attempts: int = 3) -> bytes:
+        """ESO's data portal sometimes answers 502/503/504 when a cutout job times out behind
+        its proxy; those are worth a couple of retries before giving up."""
+        from pyvo.dal.exceptions import DALServiceError
+
+        delay = 5.0
+        last: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return row.processed(circle=circle, band=band).read()
+            except DALServiceError as exc:
+                msg = str(exc)
+                transient = any(code in msg for code in ("502", "503", "504"))
+                last = exc
+                if not transient or attempt == attempts:
+                    break
+                log.warning("SODA attempt %d failed (%s); retrying in %.0fs", attempt, msg, delay)
+                time.sleep(delay)
+                delay *= 2
+        assert last is not None
+        msg = str(last)
+        if any(code in msg for code in ("502", "503", "504")):
+            raise ValueError(
+                "ESO's SODA service failed on its side (" + msg.split(" for url")[0] + "). "
+                "This happens for large mosaics when the cutout job times out; try again in a "
+                "minute, use a smaller aperture, or pick another cube."
+            ) from last
+        raise last
 
 
 # -- extraction -----------------------------------------------------------------------------------

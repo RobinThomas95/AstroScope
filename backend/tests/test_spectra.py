@@ -226,3 +226,34 @@ def test_empty_soda_answer_is_explained(monkeypatch):
     with pytest.raises(ValueError, match="outside this cube"):
         SodaCutoutClient()._fetch("https://archive.eso.org/datalink/links?ID=x", 1, 1, 3, None)
     assert muse_mod
+
+
+def test_soda_5xx_is_retried_then_explained(monkeypatch):
+    from pyvo.dal.exceptions import DALServiceError
+
+    from app.services import muse as muse_mod
+    from app.services.muse import SodaCutoutClient
+
+    calls = []
+
+    class Row:
+        def _get_soda_resource(self):
+            return object()
+
+        def processed(self, circle=None, band=None):
+            calls.append(1)
+            raise DALServiceError("502 Server Error: Proxy Error for url: https://x")
+
+    class DL:
+        def bysemantics(self, s):
+            return [Row()]
+
+    from pyvo.dal import adhoc
+
+    monkeypatch.setattr(
+        adhoc.DatalinkResults, "from_result_url", staticmethod(lambda url, session=None: DL())
+    )
+    monkeypatch.setattr(muse_mod.time, "sleep", lambda s: None)
+    with pytest.raises(ValueError, match="failed on its side"):
+        SodaCutoutClient()._fetch("https://archive.eso.org/datalink/links?ID=x", 1, 1, 3, None)
+    assert len(calls) == 3
