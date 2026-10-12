@@ -26,7 +26,7 @@ class HISurvey:
 HI_SURVEYS: tuple[HISurvey, ...] = (
     HISurvey("alfalfa", "ALFALFA α.100 (Haynes+ 2018)", "J/ApJ/861/49", 3.5),
     HISurvey("hipass", "HIPASS HICAT (Meyer+ 2004)", "VIII/73", 15.5),
-    HISurvey("nhicat", "HIPASS northern extension NHICAT (Wong+ 2006)", "J/MNRAS/371/1855", 15.5),
+    HISurvey("nhicat", "Northern HIPASS NHICAT (Wong+ 2006)", "VIII/89", 15.5),
     HISurvey("springob", "HI archive (Springob+ 2005)", "J/ApJS/160/149", 3.5),
 )
 

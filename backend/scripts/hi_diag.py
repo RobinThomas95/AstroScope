@@ -24,13 +24,36 @@ def find(keywords: list[str]) -> None:
         except Exception as exc:  # noqa: BLE001
             print("  FAILED", type(exc).__name__, exc)
             continue
+        if not cats:
+            print("  (no matches)")
         for name, meta in cats.items():
-            print(f"  {name}: {meta.description}")
+            print(f"  {name}: {getattr(meta, 'description', meta)}")
+
+
+def describe(catalogs: list[str]) -> None:
+    """Print the tables and columns of VizieR catalogues (confirms an identifier exists)."""
+    from astroquery.vizier import Vizier
+
+    v = Vizier(row_limit=3)
+    for cat in catalogs:
+        print(f"=== VizieR catalogue {cat}")
+        try:
+            tables = v.get_catalogs(cat)
+        except Exception as exc:  # noqa: BLE001
+            print("  FAILED", type(exc).__name__, exc)
+            continue
+        if not tables:
+            print("  (no such catalogue, or no tables)")
+        for name, table in zip(tables.keys(), tables.values(), strict=True):
+            print(f"  table {name}: columns {list(table.colnames)}")
 
 
 def main(argv: list[str]) -> None:
     if argv and argv[0] == "--find":
         find(argv[1:] or ["Springob HI", "HIPASS", "ALFALFA"])
+        return
+    if argv and argv[0] == "--catalog":
+        describe(argv[1:] or ["J/ApJS/160/149", "VIII/89"])
         return
     ra = float(argv[0]) if argv else 53.4015
     dec = float(argv[1]) if len(argv) > 1 else -36.1404

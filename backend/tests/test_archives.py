@@ -188,13 +188,14 @@ def test_adapters_map_rows_and_build_adql():
     assert "UPPER" not in adql
 
     m = mast.observations[0]
-    assert m.collection == "JWST" and m.band == "1.5–4.4 µm" and m.preview_url.endswith(".jpg")
+    assert m.collection == "JWST" and m.preview_url.endswith(".jpg")
     assert m.extra["filters"] == "F200W" and m.public is True
     assert "obs_collection IN ('HST', 'JWST')" in s.adapters["mast"].adql[0]
     assert "CONTAINS(POINT('ICRS', s_ra, s_dec)" in s.adapters["mast"].adql[0]
 
     a = alma.observations[0]
     assert a.instrument == "ALMA" and a.band.startswith("Band 6 (") and "GHz" in a.band
+    assert m.band == "F200W (1.5–4.4 µm)"
     assert a.public is True and a.archive_url.startswith("https://almascience.org/aq/?mous=")
     assert "science_observation = 'T'" in s.adapters["alma"].adql[0]
     assert res.instrument_counts == {"ALMA": 1, "MUSE": 1, "NIRCAM/IMAGE": 1}
@@ -241,6 +242,7 @@ def test_mast_discovers_endpoint_table_and_columns():
                     {"column_name": "dec"},
                     {"column_name": "collection"},
                     {"column_name": "instrument_name"},
+                    {"column_name": "intentType"},
                 ]
             return [dict(MAST_ROW, ra=53.41, dec=-36.15, collection="JWST")]
 
@@ -253,6 +255,7 @@ def test_mast_discovers_endpoint_table_and_columns():
     adql = a.calls[-1][1]
     assert "FROM dbo.ObsPointing WHERE" in adql
     assert "CONTAINS(POINT('ICRS', ra, dec)" in adql and "collection IN ('HST', 'JWST')" in adql
+    assert "AND intentType = 'science'" in adql
     # discovery happens once
     n = len(a.calls)
     a.search(53.4, -36.1, 0.1)
@@ -266,6 +269,38 @@ def test_mast_reports_when_no_endpoint_answers():
 
     res = Dead(timeout=1).search(1, 1, 0.1)
     assert res.status == "error" and "No usable MAST TAP endpoint" in res.error
+
+
+def test_alma_merges_spectral_windows():
+    rows = []
+    for spw, (lo, hi) in {23: (85.3, 87.2), 25: (87.2, 89.0), 29: (99.0, 100.9)}.items():
+        rows.append(
+            dict(
+                ALMA_ROW,
+                obs_id=f"uid://A001/X3833/X20e.source.NGC_1365.spw.{spw}",
+                em_min=299792458.0 / (hi * 1e9),
+                em_max=299792458.0 / (lo * 1e9),
+                band_list="3",
+                s_resolution=2.0 if spw != 25 else 1.8,
+            )
+        )
+    rows.append(
+        dict(
+            ALMA_ROW,
+            obs_id="uid://A001/X1465/X1c1d.source.NGC_1365.spw.17",
+            em_min=1.0e-3,
+            em_max=1.4e-3,
+            band_list="6",
+        )
+    )
+    a = FakeAlma(rows)
+    res = a.search(53.4, -36.14, 0.1)
+    assert res.count == 2
+    first_obs, second = res.observations
+    assert first_obs.obs_id == "uid://A001/X3833/X20e.source.NGC_1365"
+    assert first_obs.extra["n_spw"] == 3 and first_obs.resolution_arcsec == 1.8
+    assert first_obs.band == "Band 3 (85.3–100.9 GHz), 3 spw"
+    assert second.extra["n_spw"] == 1 and second.band.startswith("Band 6 (")
 
 
 # -- HI --------------------------------------------------------------------------------------
@@ -336,6 +371,7 @@ def test_hi_cross_match_maps_catalog_columns():
     assert spr.status == "error" and "vizier slow" in spr.error
     assert res.radius_arcmin == pytest.approx(7.75)  # half the HIPASS beam
     assert {s.key for s in HI_SURVEYS} == {"alfalfa", "hipass", "nhicat", "springob"}
+    assert next(s.catalog for s in HI_SURVEYS if s.key == "nhicat") == "VIII/89"
 
 
 # -- endpoints -------------------------------------------------------------------------------

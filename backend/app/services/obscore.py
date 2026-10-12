@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -238,7 +239,7 @@ class ObsCoreArchive:
 
     @staticmethod
     def is_public(r: dict[str, Any], release: str | None) -> bool | None:
-        rights = _str(first(r, "data_rights"))
+        rights = _str(first(r, "data_rights", "dataRights"))
         if rights:
             return rights.lower().startswith("pub")
         if release:
@@ -288,7 +289,9 @@ class MastArchive(ObsCoreArchive):
         "https://vao.stsci.edu/caomtap/CaomTapService.svc",
     )
     tap_url = tap_candidates[0]
-    table_candidates = ("dbo.CaomObservation", "ivoa.obscore", "dbo.ObsPointing")
+    # dbo.ObsPointing is one row per observation with preview/data links, filters and release
+    # dates; ivoa.obscore is one row per data product (duplicates, and much slower at MAST).
+    table_candidates = ("dbo.ObsPointing", "ivoa.obscore", "dbo.CaomObservation")
     table = table_candidates[0]
     spatial = "point"
     instruments = ()
@@ -390,21 +393,31 @@ class MastArchive(ObsCoreArchive):
 
     def build_adql(self, ra, dec, radius_deg, instruments, maxrec):
         coll = ", ".join(f"'{c}'" for c in self.collections)
+        intent = self._pick(self.columns, "intentType", "intent")
+        science = f" AND {intent} = 'science'" if intent else ""
         return (
             f"SELECT TOP {int(maxrec)} * FROM {self.table} WHERE "
             f"{self.spatial_predicate(ra, dec, radius_deg)} "
-            f"AND {self.collection_column} IN ({coll})"
+            f"AND {self.collection_column} IN ({coll}){science}"
             f"{self.instrument_predicate(instruments)}"
         )
 
     def decorate(self, obs, r):
         obs.extra["filters"] = _str(first(r, "filters"))
         obs.extra["obs_title"] = _str(first(r, "obs_title"))
+        obs.extra["proposal_pi"] = _str(first(r, "proposal_pi"))
+        if obs.extra["filters"] and obs.band:
+            obs.band = f"{obs.extra['filters']} ({obs.band})"
+        elif obs.extra["filters"]:
+            obs.band = obs.extra["filters"]
         if obs.obs_id:
             obs.archive_url = (
                 "https://mast.stsci.edu/portal/Mashup/Clients/Mast/Portal.html?"
                 f"searchQuery={quote(obs.obs_id)}"
             )
+
+
+_SPW_SUFFIX = re.compile(r"\.spw\.\d+$", re.IGNORECASE)
 
 
 class AlmaArchive(ObsCoreArchive):
@@ -414,6 +427,51 @@ class AlmaArchive(ObsCoreArchive):
     table = "ivoa.obscore"
     spatial = "intersects"
     instruments = ()
+
+    def search(self, ra, dec, radius_deg, instruments=None, maxrec=MAX_ROWS):
+        res = super().search(ra, dec, radius_deg, instruments, maxrec)
+        if res.status == "ok":
+            res.observations = self.merge_spectral_windows(res.observations)
+            res.count = len(res.observations)
+        return res
+
+    @staticmethod
+    def merge_spectral_windows(obs: list[ArchiveObservation]) -> list[ArchiveObservation]:
+        """ALMA's ObsCore lists one row per spectral window; collapse them per observation."""
+        merged: dict[str, ArchiveObservation] = {}
+        order: list[str] = []
+        for o in obs:
+            base = _SPW_SUFFIX.sub("", o.obs_id or "")
+            key = base or f"{o.extra.get('member_ous_uid')}|{o.target_name}|{o.mjd_obs}"
+            if key not in merged:
+                copy = o.model_copy(deep=True)
+                copy.obs_id = base or o.obs_id
+                copy.extra["n_spw"] = 1
+                merged[key] = copy
+                order.append(key)
+                continue
+            m = merged[key]
+            m.extra["n_spw"] = int(m.extra.get("n_spw") or 1) + 1
+            if o.em_min_m is not None:
+                m.em_min_m = min(m.em_min_m or o.em_min_m, o.em_min_m)
+            if o.em_max_m is not None:
+                m.em_max_m = max(m.em_max_m or o.em_max_m, o.em_max_m)
+            if o.resolution_arcsec is not None and (
+                m.resolution_arcsec is None or o.resolution_arcsec < m.resolution_arcsec
+            ):
+                m.resolution_arcsec = o.resolution_arcsec
+        out = []
+        for key in order:
+            m = merged[key]
+            band = band_label(m.em_min_m, m.em_max_m)
+            bands = m.extra.get("band_list")
+            m.band = f"Band {bands} ({band})" if bands and band else band or m.band
+            if int(m.extra.get("n_spw") or 1) > 1:
+                m.band = (
+                    f"{m.band}, {m.extra['n_spw']} spw" if m.band else f"{m.extra['n_spw']} spw"
+                )
+            out.append(m)
+        return out
 
     def build_adql(self, ra, dec, radius_deg, instruments, maxrec):
         return (
