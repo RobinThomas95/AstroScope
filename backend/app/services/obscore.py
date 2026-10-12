@@ -203,8 +203,8 @@ class ObsCoreArchive:
     def map_row(self, r: dict[str, Any], ra: float, dec: float) -> ArchiveObservation | None:
         em_min = normalise_em(first(r, "em_min"))
         em_max = normalise_em(first(r, "em_max"))
-        s_ra = _float(first(r, "s_ra"))
-        s_dec = _float(first(r, "s_dec"))
+        s_ra = _float(first(r, "s_ra", "ra", "targetRA"))
+        s_dec = _float(first(r, "s_dec", "dec", "targetDec"))
         mjd = _float(first(r, "t_min"))
         release = _str(first(r, "obs_release_date", "t_obs_release"))
         obs = ArchiveObservation(
@@ -301,12 +301,34 @@ class MastArchive(ObsCoreArchive):
             self.tap_url = tap_url
         self._discovered = False
 
+    # Column names differ between MAST tables; discovered from TAP_SCHEMA.columns.
+    ra_column = "s_ra"
+    dec_column = "s_dec"
+    collection_column = "obs_collection"
+    columns: list[str] = []
+
     def list_tables(self) -> list[str]:
         rows = self.run("SELECT table_name FROM TAP_SCHEMA.tables", maxrec=2000)
         return [str(r.get("table_name")) for r in rows if r.get("table_name")]
 
+    def list_columns(self, table: str) -> list[str]:
+        rows = self.run(
+            f"SELECT column_name FROM TAP_SCHEMA.columns WHERE table_name = '{table}'",
+            maxrec=2000,
+        )
+        return [str(r.get("column_name")) for r in rows if r.get("column_name")]
+
+    @staticmethod
+    def _pick(columns: list[str], *candidates: str) -> str | None:
+        lower = {c.lower(): c for c in columns}
+        for cand in candidates:
+            if cand.lower() in lower:
+                return lower[cand.lower()]
+        return None
+
     def discover(self) -> None:
-        """Pick the first working endpoint and the observation table it exposes."""
+        """Pick the first working endpoint, the observation table it exposes and the names of
+        the position / collection columns in that table."""
         if self._discovered:
             return
         errors = []
@@ -319,21 +341,44 @@ class MastArchive(ObsCoreArchive):
                 errors.append(f"{url}: {exc}")
                 continue
             lower = {t.lower(): t for t in tables}
+            chosen = None
             for cand in self.table_candidates:
                 if cand.lower() in lower:
-                    self.table = lower[cand.lower()]
-                    break
-            else:
-                log.warning(
-                    "MAST TAP at %s has none of %s; keeping %s",
-                    url,
-                    self.table_candidates,
-                    self.table,
-                )
-            log.info("MAST TAP: using %s table %s", url, self.table)
+                    table = lower[cand.lower()]
+                    try:
+                        cols = self.list_columns(table)
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{url} {table}: {exc}")
+                        continue
+                    ra = self._pick(cols, "s_ra", "ra", "targetRA", "ra_targ")
+                    dec = self._pick(cols, "s_dec", "dec", "targetDec", "dec_targ")
+                    if ra and dec:
+                        chosen = (table, cols, ra, dec)
+                        break
+                    errors.append(f"{url} {table}: no position columns in {cols[:20]}")
+            if chosen is None:
+                errors.append(f"{url}: none of {self.table_candidates} usable in {tables[:30]}")
+                continue
+            self.table, self.columns, self.ra_column, self.dec_column = chosen
+            self.collection_column = (
+                self._pick(self.columns, "obs_collection", "collection", "obsCollection")
+                or "obs_collection"
+            )
+            log.info(
+                "MAST TAP: using %s table %s (%s, %s, %s)",
+                url,
+                self.table,
+                self.ra_column,
+                self.dec_column,
+                self.collection_column,
+            )
             self._discovered = True
             return
-        raise ConnectionError("No MAST TAP endpoint answered: " + "; ".join(errors))
+        raise ConnectionError("No usable MAST TAP endpoint: " + "; ".join(errors))
+
+    def spatial_predicate(self, ra, dec, radius_deg):
+        circle = f"CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {radius_deg:.6f})"
+        return f"CONTAINS(POINT('ICRS', {self.ra_column}, {self.dec_column}), {circle}) = 1"
 
     def search(self, ra, dec, radius_deg, instruments=None, maxrec=MAX_ROWS):
         t0 = time.monotonic()
@@ -347,7 +392,8 @@ class MastArchive(ObsCoreArchive):
         coll = ", ".join(f"'{c}'" for c in self.collections)
         return (
             f"SELECT TOP {int(maxrec)} * FROM {self.table} WHERE "
-            f"{self.spatial_predicate(ra, dec, radius_deg)} AND obs_collection IN ({coll})"
+            f"{self.spatial_predicate(ra, dec, radius_deg)} "
+            f"AND {self.collection_column} IN ({coll})"
             f"{self.instrument_predicate(instruments)}"
         )
 

@@ -26,6 +26,7 @@ class HISurvey:
 HI_SURVEYS: tuple[HISurvey, ...] = (
     HISurvey("alfalfa", "ALFALFA α.100 (Haynes+ 2018)", "J/ApJ/861/49", 3.5),
     HISurvey("hipass", "HIPASS HICAT (Meyer+ 2004)", "VIII/73", 15.5),
+    HISurvey("nhicat", "HIPASS northern extension NHICAT (Wong+ 2006)", "J/MNRAS/371/1855", 15.5),
     HISurvey("springob", "HI archive (Springob+ 2005)", "J/ApJS/160/149", 3.5),
 )
 
@@ -41,8 +42,8 @@ _VEL_ERR = ("e_Vhel", "e_Vhelio", "e_V21", "e_RV", "e_cz", "e_V")
 _W50 = ("W50", "W50max", "W50c", "Wc50", "W50h", "W50m")
 _W50_ERR = ("e_W50", "e_W50c")
 _W20 = ("W20", "W20max", "W20c", "Wc20", "W20h", "W20m")
-_FLUX = ("FHI", "Sint", "S21", "SHI", "Fc", "Stot", "F21", "FI", "Sdv", "Flux")
-_FLUX_ERR = ("e_FHI", "e_Sint", "e_S21", "e_SHI", "e_Fc", "e_Flux")
+_FLUX = ("FHI", "HIflux", "Sint", "S21", "SHI", "Fc", "Stot", "F21", "FI", "Sdv", "Flux")
+_FLUX_ERR = ("e_FHI", "e_HIflux", "e_Sint", "e_S21", "e_SHI", "e_Fc", "e_Flux")
 _SNR = ("SNR", "S/N", "snr")
 _RMS = ("rms", "RMS", "Srms")
 _DIST = ("Dist", "D", "Dmpc")

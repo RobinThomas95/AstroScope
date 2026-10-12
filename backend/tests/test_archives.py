@@ -221,7 +221,7 @@ def test_intersects_falls_back_to_point_search():
     assert "CONTAINS(POINT" in a.adql[-1]
 
 
-def test_mast_discovers_endpoint_and_table():
+def test_mast_discovers_endpoint_table_and_columns():
     class Discovering(MastArchive):
         def __init__(self):
             super().__init__(timeout=1)
@@ -231,16 +231,28 @@ def test_mast_discovers_endpoint_and_table():
             self.calls.append((self.tap_url, adql))
             if self.tap_url.startswith("https://mast.stsci.edu"):
                 raise ConnectionError("404")
-            if "TAP_SCHEMA" in adql:
-                return [{"table_name": "dbo.ObsPointing"}, {"table_name": "ivoa.ObsCore"}]
-            return [dict(MAST_ROW)]
+            if "TAP_SCHEMA.tables" in adql:
+                return [{"table_name": "dbo.ObsPointing"}, {"table_name": "dbo.CaomObservation"}]
+            if "TAP_SCHEMA.columns" in adql:
+                if "dbo.CaomObservation" in adql:  # preferred table but no position columns
+                    return [{"column_name": "obsID"}, {"column_name": "collection"}]
+                return [
+                    {"column_name": "ra"},
+                    {"column_name": "dec"},
+                    {"column_name": "collection"},
+                    {"column_name": "instrument_name"},
+                ]
+            return [dict(MAST_ROW, ra=53.41, dec=-36.15, collection="JWST")]
 
     a = Discovering()
     res = a.search(53.4, -36.1, 0.1)
     assert res.status == "ok" and res.count == 1
     assert a.tap_url == "https://vao.stsci.edu/caomtap/CaomTapService.svc"
-    assert a.table == "ivoa.ObsCore"  # case-insensitive match, preferred over ObsPointing
-    assert "FROM ivoa.ObsCore WHERE" in a.calls[-1][1]
+    assert a.table == "dbo.ObsPointing"  # CaomObservation skipped: no position columns
+    assert (a.ra_column, a.dec_column, a.collection_column) == ("ra", "dec", "collection")
+    adql = a.calls[-1][1]
+    assert "FROM dbo.ObsPointing WHERE" in adql
+    assert "CONTAINS(POINT('ICRS', ra, dec)" in adql and "collection IN ('HST', 'JWST')" in adql
     # discovery happens once
     n = len(a.calls)
     a.search(53.4, -36.1, 0.1)
@@ -253,7 +265,7 @@ def test_mast_reports_when_no_endpoint_answers():
             raise ConnectionError("down")
 
     res = Dead(timeout=1).search(1, 1, 0.1)
-    assert res.status == "error" and "No MAST TAP endpoint answered" in res.error
+    assert res.status == "error" and "No usable MAST TAP endpoint" in res.error
 
 
 # -- HI --------------------------------------------------------------------------------------
@@ -271,8 +283,8 @@ class FakeHI(HICrossMatcher):
                         "Vhelio": 1636,
                         "W50": 350,
                         "e_W50": 5,
-                        "FHI": 12.3,
-                        "e_FHI": 0.4,
+                        "HIflux": 12.3,
+                        "e_HIflux": 0.4,
                         "SNR": 20.1,
                         "Dist": 18.0,
                         "logMHI": 9.8,
@@ -323,7 +335,7 @@ def test_hi_cross_match_maps_catalog_columns():
     spr = by["J/ApJS/160/149"]
     assert spr.status == "error" and "vizier slow" in spr.error
     assert res.radius_arcmin == pytest.approx(7.75)  # half the HIPASS beam
-    assert {s.key for s in HI_SURVEYS} == {"alfalfa", "hipass", "springob"}
+    assert {s.key for s in HI_SURVEYS} == {"alfalfa", "hipass", "nhicat", "springob"}
 
 
 # -- endpoints -------------------------------------------------------------------------------
@@ -368,7 +380,7 @@ def test_footprint_moc_endpoint(client):
 
 def test_hi_endpoint(client):
     body = client.get("/api/hi", params={"ra": 53.4, "dec": -36.14}).json()
-    assert len(body["results"]) == 3
+    assert len(body["results"]) == 4
     assert body["results"][0]["detections"][0]["w50_kms"] == 350
 
 

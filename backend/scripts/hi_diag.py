@@ -13,7 +13,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services.hi import HI_SURVEYS, HICrossMatcher  # noqa: E402
 
 
+def find(keywords: list[str]) -> None:
+    """List VizieR catalogues matching keywords (to confirm catalogue identifiers)."""
+    from astroquery.vizier import Vizier
+
+    for kw in keywords:
+        print(f"=== VizieR catalogues matching {kw!r}")
+        try:
+            cats = Vizier.find_catalogs(kw, max_catalogs=40)
+        except Exception as exc:  # noqa: BLE001
+            print("  FAILED", type(exc).__name__, exc)
+            continue
+        for name, meta in cats.items():
+            print(f"  {name}: {meta.description}")
+
+
 def main(argv: list[str]) -> None:
+    if argv and argv[0] == "--find":
+        find(argv[1:] or ["Springob HI", "HIPASS", "ALFALFA"])
+        return
     ra = float(argv[0]) if argv else 53.4015
     dec = float(argv[1]) if len(argv) > 1 else -36.1404
     radius = float(argv[2]) if len(argv) > 2 else None
