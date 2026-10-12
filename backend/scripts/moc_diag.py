@@ -15,7 +15,13 @@ import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.mocserver import FITS_MAGIC, MOCSERVER_URL, MocServerClient  # noqa: E402
+from app.services.mocserver import (  # noqa: E402
+    FITS_MAGIC,
+    MOCSERVER_URL,
+    MocServerClient,
+    moc_dimension,
+    to_spatial_fits,
+)
 from app.services.surveys import OVERLAYS  # noqa: E402
 
 TEST_POINTS = {
@@ -25,8 +31,23 @@ TEST_POINTS = {
 }
 
 
+def tomcat_message(html: str) -> str:
+    import re
+
+    m = re.search(r"<b>message</b>\s*<u>(.*?)</u>", html, re.S)
+    return m.group(1).strip() if m else html[:200]
+
+
 def describe_fits(data: bytes) -> str:
     from astropy.io import fits
+
+    try:
+        dim = moc_dimension(data)
+        if dim != "SPACE":
+            data = to_spatial_fits(data)
+            print(f"    {dim} MOC projected onto the sky")
+    except Exception as exc:  # noqa: BLE001
+        print(f"    projection FAILED {type(exc).__name__}: {exc}")
 
     fd, path = tempfile.mkstemp(suffix=".fits")
     with os.fdopen(fd, "wb") as fh:
@@ -104,8 +125,20 @@ def main(argv: list[str]) -> None:
                 if res.content.startswith(FITS_MAGIC):
                     print(describe_fits(res.content))
                     break
+                print("    message:", tomcat_message(res.text))
                 if res.status_code != 413:
-                    print("    body:", res.text[:300].replace("\n", " "))
+                    break
+            else:
+                url = r.moc_access_url
+                print(f"    moc_access_url: {url}")
+                if url:
+                    res = httpx.get(url, timeout=120, follow_redirects=True)
+                    print(
+                        f"    direct: HTTP {res.status_code}, {res.headers.get('content-type')}, "
+                        f"{len(res.content)} bytes"
+                    )
+                    if res.content.startswith(FITS_MAGIC):
+                        print(describe_fits(res.content))
 
 
 if __name__ == "__main__":

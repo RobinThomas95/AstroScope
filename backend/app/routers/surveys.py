@@ -98,7 +98,7 @@ async def overlay_moc(overlay_id: str) -> Response:
         )
     ids = [r.id for r in recs]
     try:
-        data = await run_in_threadpool(client.fetch_union_fits, ids)
+        data = await run_in_threadpool(client.fetch_union_fits, recs)
     except Exception as exc:  # noqa: BLE001 - remote service
         raise HTTPException(
             status_code=502, detail=f"Could not fetch MOC for {', '.join(ids)}: {exc}"

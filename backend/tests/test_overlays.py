@@ -22,7 +22,7 @@ class FakeMocServer(MocServerClient):
     def _get(self, params):  # pragma: no cover - the fake never hits the network
         raise AssertionError("network call attempted")
 
-    def fetch_moc_fits(self, record_id):
+    def fetch_moc_fits(self, record_id, moc_access_url=None):
         if self.fits is None:
             raise ValueError("no moc")
         return self.fits[record_id] if isinstance(self.fits, dict) else self.fits
@@ -171,3 +171,104 @@ def test_fetch_moc_degrades_order_on_413():
     calls.clear()
     assert c.fetch_moc_fits("CDS/C/MUSE") == a
     assert calls == []
+
+
+def _stmoc_fits(spatial_fits_cone):
+    import os
+    import tempfile
+
+    import astropy.units as u
+    from astropy.time import Time
+    from mocpy import MOC, STMOC
+
+    m = MOC.from_cone(lon=53.4 * u.deg, lat=-36.1 * u.deg, radius=0.5 * u.deg, max_depth=9)
+    st = STMOC.from_spatial_coverages(
+        Time(["2015-01-01"]), Time(["2024-01-01"]), [m], time_depth=10
+    )
+    fd, path = tempfile.mkstemp(suffix=".fits")
+    os.close(fd)
+    st.save(path, format="fits", overwrite=True)
+    data = open(path, "rb").read()
+    os.unlink(path)
+    return data, m
+
+
+def test_to_spatial_fits_projects_time_space_moc():
+    import os
+    import tempfile
+
+    from mocpy import MOC
+
+    from app.services.mocserver import moc_dimension, to_spatial_fits
+
+    data, m = _stmoc_fits(None)
+    assert moc_dimension(data) == "TIME.SPACE"
+    out = to_spatial_fits(data)
+    assert moc_dimension(out) == "SPACE"
+    fd, path = tempfile.mkstemp(suffix=".fits")
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(out)
+    assert MOC.load(path, format="fits") == m
+    os.unlink(path)
+
+
+def test_to_spatial_fits_projects_frequency_space_moc():
+    import os
+    import tempfile
+
+    import astropy.units as u
+    from mocpy import SFMOC
+
+    from app.services.mocserver import moc_dimension, to_spatial_fits
+
+    sf = SFMOC.from_frequency_ranges_and_positions(
+        frequencies_min=[1e9] * u.Hz,
+        frequencies_max=[2e11] * u.Hz,
+        lon=[53.4] * u.deg,
+        lat=[-36.1] * u.deg,
+        max_order_frequency=20,
+        max_order_space=9,
+    )
+    fd, path = tempfile.mkstemp(suffix=".fits")
+    os.close(fd)
+    sf.save(path, format="fits", overwrite=True)
+    data = open(path, "rb").read()
+    os.unlink(path)
+    assert moc_dimension(data) == "FREQUENCY.SPACE"
+    out = to_spatial_fits(data)
+    assert moc_dimension(out) == "SPACE"
+    assert out.startswith(b"SIMPLE  =")
+
+
+def test_fetch_moc_falls_back_to_access_url_and_projects(monkeypatch):
+    import httpx
+
+    from app.services import mocserver
+
+    data, m = _stmoc_fits(None)
+    urls = []
+
+    class Client(MocServerClient):
+        def _get(self, params, ok_statuses=()):
+            return httpx.Response(413, text="<html>too big</html>")
+
+    def fake_get(self, url, headers=None):
+        urls.append(url)
+        return httpx.Response(200, content=data, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    c = Client()
+    out = c.fetch_moc_fits("CDS/C/PHANGS-ALMA", "https://example.org/PHANGS/Moc.fits")
+    assert urls == ["https://example.org/PHANGS/Moc.fits"]
+    assert mocserver.moc_dimension(out) == "SPACE"
+
+
+def test_fetch_moc_reports_all_failures():
+    import httpx
+
+    class Client(MocServerClient):
+        def _get(self, params, ok_statuses=()):
+            return httpx.Response(413, text="<html>too big</html>")
+
+    with pytest.raises(ValueError, match="refused \\(413\\)"):
+        Client().fetch_moc_fits("CDS/C/MUSE")
