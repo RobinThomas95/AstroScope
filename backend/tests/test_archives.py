@@ -283,16 +283,22 @@ class FakeHI(HICrossMatcher):
         if catalog == "VIII/73":
             return {
                 "VIII/73/hicat": [
-                    {
+                    {  # real HICAT column names and sexagesimal coordinates
                         "HIPASS": "J0333-36",
-                        "RAJ2000": 53.39,
-                        "DEJ2000": -36.13,
-                        "_r": 1.0,
-                        "RV": 1640,
-                        "W50": 360,
-                        "W20": 390,
-                        "Sint": 11.9,
-                        "Speak": 0.1,
+                        "RAJ2000": "03 33 33.4",
+                        "DEJ2000": "-36 08 27",
+                        "_r": 0.598,
+                        "RV50max": 1636.4,
+                        "RV50min": 1753.0,
+                        "RVmom": 1637.1,
+                        "RVsp": 1784.7,
+                        "W50max": 373.7,
+                        "W50min": 140.4,
+                        "W20max": 406.8,
+                        "Speak": 0.6767,
+                        "Sint": 174.7,
+                        "RMS": 0.0158,
+                        "SimbadName": "HIPASSJ0333-36",
                     },
                 ]
             }
