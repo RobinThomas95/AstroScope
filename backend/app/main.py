@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.config import get_settings
-from app.routers import archives, resolver, surveys
+from app.routers import archives, resolver, spectra, surveys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(resolver.router)
 app.include_router(surveys.router)
 app.include_router(archives.router)
+app.include_router(spectra.router)
 
 
 @app.get("/api/health", tags=["meta"])
@@ -40,7 +41,7 @@ async def health() -> dict:
             "resolver": True,
             "viewer": True,
             "archives": True,
-            "spectra": False,
+            "spectra": True,
             "literature": bool(settings.ads_dev_key),
             "synthesis": bool(settings.anthropic_api_key or settings.openai_api_key),
         },

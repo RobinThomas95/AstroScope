@@ -201,3 +201,52 @@ export interface HISearch {
   radius_arcmin: number;
   results: HISurveyResult[];
 }
+
+// ---- Module 4: spectra ----
+
+export interface SpectralLine {
+  name: string;
+  rest_wavelength_A: number;
+  observed_wavelength_A: number | null;
+  kind: "emission" | "absorption" | "both";
+  group: string;
+}
+
+export interface Spectrum1D {
+  wavelength_A: number[];
+  flux: (number | null)[];
+  error: (number | null)[] | null;
+  flux_unit: string;
+  wavelength_unit: string;
+  method: "sum" | "mean";
+  n_spaxels: number;
+  aperture_radius_arcsec: number;
+  center_ra_deg: number;
+  center_dec_deg: number;
+  pixel_scale_arcsec: number | null;
+  n_channels: number;
+  source: Record<string, string | number | null>;
+  warnings: string[];
+  cached: boolean;
+}
+
+export interface HIProfile {
+  velocity_kms: number[];
+  flux_jy: number[];
+  model: string;
+  source_id: string | null;
+  survey: string | null;
+  velocity_sys_kms: number | null;
+  w50_kms: number | null;
+  w20_kms: number | null;
+  integrated_flux_jy_kms: number | null;
+  peak_jy: number | null;
+  note: string;
+}
+
+/** A request to extract a spectrum from one MUSE cube. */
+export interface SpectrumRequest {
+  datalinkUrl: string;
+  label: string;
+  obsId: string | null;
+}

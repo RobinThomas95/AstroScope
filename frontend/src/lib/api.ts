@@ -1,4 +1,12 @@
-import type { ArchiveSearch, HISearch, ResolvedTarget, SurveyCatalog } from "../types";
+import type {
+  ArchiveSearch,
+  HIProfile,
+  HISearch,
+  ResolvedTarget,
+  SpectralLine,
+  Spectrum1D,
+  SurveyCatalog,
+} from "../types";
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
 
@@ -71,4 +79,38 @@ export function fillOverlayTemplate(
     .replace("{ra}", ra.toFixed(6))
     .replace("{dec}", dec.toFixed(6))
     .replace("{radius}", String(radiusArcmin));
+}
+
+export function fetchMuseSpectrum(
+  opts: {
+    datalinkUrl: string;
+    ra: number;
+    dec: number;
+    radiusArcsec: number;
+    method: "sum" | "mean";
+  },
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    datalink_url: opts.datalinkUrl,
+    ra: opts.ra.toFixed(6),
+    dec: opts.dec.toFixed(6),
+    radius_arcsec: String(opts.radiusArcsec),
+    method: opts.method,
+  });
+  return getJson<Spectrum1D>(`/api/spectrum/muse?${params.toString()}`, signal);
+}
+
+export function fetchLines(z: number | null, wmin?: number, wmax?: number, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (z !== null) params.set("z", String(z));
+  if (wmin !== undefined) params.set("wmin", String(wmin));
+  if (wmax !== undefined) params.set("wmax", String(wmax));
+  return getJson<SpectralLine[]>(`/api/lines?${params.toString()}`, signal);
+}
+
+export function fetchHIProfile(ra: number, dec: number, sourceId?: string, signal?: AbortSignal) {
+  const params = new URLSearchParams({ ra: ra.toFixed(6), dec: dec.toFixed(6) });
+  if (sourceId) params.set("source_id", sourceId);
+  return getJson<HIProfile>(`/api/hi/profile?${params.toString()}`, signal);
 }

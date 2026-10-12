@@ -11,7 +11,7 @@ Aladin Lite v3 sky views across different surveys.
 | 1 | Target resolver & basic metadata (SIMBAD TAP, NED, Sesame) | implemented |
 | 2 | Synced 2x2 Aladin Lite viewer with per-pane surveys and MOC overlays | implemented |
 | 3 | Archive cross-matching via ObsCore TAP (ESO, MAST, ALMA) + HI surveys | implemented |
-| 4 | ESO DataLink/SODA MUSE cutouts, 1D spectra, HI overplot | planned |
+| 4 | ESO DataLink/SODA MUSE cutouts, 1D spectra, HI overplot | implemented |
 | 5 | ADS literature & bibliometrics | planned |
 | 6 | LLM scientific synthesis | planned |
 
@@ -24,12 +24,15 @@ backend/            FastAPI application (Python 3.11+)
   app/schemas/      Pydantic response models
   app/services/     coords parsing, SIMBAD TAP client, NED client, resolver, survey catalog,
                     MOCServer client, ObsCore adapters (obscore.py), STC-S parser, footprint
-                    MOC builder, HI cross-match (hi.py)
-  app/routers/      /api/resolve, /api/surveys, /api/overlays, /api/archives, /api/hi, /api/health
+                    MOC builder, HI cross-match (hi.py), SODA cutouts + spectrum extraction
+                    (muse.py), spectral lines (lines.py), HI profile template (hiprofile.py)
+  app/routers/      /api/resolve, /api/surveys, /api/overlays, /api/archives, /api/hi,
+                    /api/spectrum/muse, /api/lines, /api/hi/profile, /api/health
   tests/            pytest suite (remote services are faked; no network needed)
 frontend/           React 18 + TypeScript + Tailwind, Vite
   src/lib/viewSync.ts      pan/zoom/FOV synchronisation between Aladin instances
-  src/components/          TargetSearch, TargetCard, AladinGrid, AladinPane, ArchivePanel
+  src/components/          TargetSearch, TargetCard, AladinGrid, AladinPane, ArchivePanel,
+                           SpectrumPanel (Plotly)
 ```
 
 ## Quick start
@@ -112,6 +115,28 @@ the northern HIPASS catalogue NHICAT (`VIII/89`) and the HIPASS Bright Galaxy Ca
 given. (The Springob+ 2005 digital HI archive is not hosted on VizieR.) Returns heliocentric velocity, W50, W20, integrated
 21 cm flux, S/N, distance and log M_HI where the catalogue provides them.
 
+### `GET /api/spectrum/muse?datalink_url=&ra=&dec=[&radius_arcsec=3&method=sum|mean&band_min_A=&band_max_A=]`
+
+Requests a spatial (and optionally spectral) cutout of a public MUSE cube through the cube's ESO
+DataLink document and its SODA service (pyvo), then integrates the cube over a circular aperture
+at the target position: wavelength array (Å), flux, 1σ error from the STAT extension, flux unit
+from `BUNIT`, number of spaxels, pixel scale, and cube provenance. Only ESO DataLink URLs are
+accepted, the aperture is capped at 30″, datasets without a SODA service are refused (no
+full-cube downloads), and cutouts/spectra are cached in memory.
+
+### `GET /api/lines?z=&wmin=&wmax=` and `GET /api/hi/profile?ra=&dec=`
+
+`/api/lines` returns common optical lines (Balmer, [OIII], [NII], [SII], Na D, Ca triplet, ...)
+redshifted to `z` and restricted to an observed window. `/api/hi/profile` builds a symmetric
+double-horn 21 cm profile from the nearest catalogued HI detection (systemic velocity, W50, W20,
+integrated flux). It is a template for overplotting, clearly labelled as such; an observed
+profile can be uploaded in the UI as a two-column (velocity, flux) text file.
+
+The Spectrum tab in the panel plots the extracted spectrum with Plotly: aperture radius and
+sum/mean controls, emission/absorption line markers, a wavelength or velocity x-axis (velocity
+about a chosen line, optionally relative to the systemic velocity), and the HI profile on a
+secondary axis in velocity mode.
+
 ## Viewer synchronisation
 
 Aladin Lite v3 has no built-in view linking, so `frontend/src/lib/viewSync.ts` implements it on
@@ -142,3 +167,7 @@ is tested against faked service responses. The first live run should confirm:
    (`dbo.CaomObservation`) and the ALMA/ESO `INTERSECTS` support are the parts to confirm live.
 4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS detections for NGC 1365 (ALFALFA does
    not cover Dec −36).
+5. In the observation list, press "spectrum" on a public MUSE cube of NGC 1365: the Spectrum tab
+   should show a 4750–9350 Å spectrum with Hα, [NII] and [SII] marked near 6600 Å. The SODA
+   request itself was exercised offline against a synthetic cube; the first live call confirms
+   that ESO's DataLink exposes the SODA descriptor pyvo expects.

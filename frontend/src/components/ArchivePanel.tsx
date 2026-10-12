@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, searchArchives, searchHI } from "../lib/api";
+import SpectrumPanel from "./SpectrumPanel";
 import type {
   ArchiveObservation,
   ArchiveSearch,
   HISearch,
   ResolvedTarget,
+  SpectrumRequest,
 } from "../types";
 
 interface Props {
@@ -13,7 +15,17 @@ interface Props {
   onRadiusChange: (r: number) => void;
 }
 
-type Tab = "obs" | "hi";
+type Tab = "obs" | "hi" | "spectrum";
+
+function canExtract(o: ArchiveObservation): boolean {
+  return (
+    o.archive === "eso" &&
+    (o.instrument ?? "").toUpperCase() === "MUSE" &&
+    (o.dataproduct_type ?? "").toLowerCase() === "cube" &&
+    o.public !== false &&
+    !!o.access_url
+  );
+}
 type SortKey = "date" | "exptime" | "sep" | "instrument";
 
 function num(v: number | null | undefined, digits = 1, suffix = ""): string {
@@ -78,7 +90,7 @@ interface MissionGroup {
   instruments: InstrumentGroup[];
 }
 
-function Links({ o }: { o: ArchiveObservation }) {
+function Links({ o, onSpectrum }: { o: ArchiveObservation; onSpectrum?: (r: SpectrumRequest) => void }) {
   const link = (href: string | null, label: string) =>
     href ? (
       <a
@@ -92,6 +104,22 @@ function Links({ o }: { o: ArchiveObservation }) {
     ) : null;
   return (
     <span className="flex flex-wrap gap-1">
+      {onSpectrum && canExtract(o) && (
+        <button
+          type="button"
+          onClick={() =>
+            onSpectrum({
+              datalinkUrl: o.access_url as string,
+              label: `MUSE ${o.obs_id ?? ""} ${o.date_obs?.slice(0, 10) ?? ""}`.trim(),
+              obsId: o.obs_id,
+            })
+          }
+          className="rounded border border-emerald-700 px-1.5 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-900/40"
+          title="Extract a 1-D spectrum at the target position"
+        >
+          spectrum
+        </button>
+      )}
       {link(o.preview_url, "preview")}
       {link(o.access_url, "data")}
       {link(o.archive_url, "archive")}
@@ -99,7 +127,15 @@ function Links({ o }: { o: ArchiveObservation }) {
   );
 }
 
-function ObsRow({ o, showMission }: { o: ArchiveObservation; showMission?: boolean }) {
+function ObsRow({
+  o,
+  showMission,
+  onSpectrum,
+}: {
+  o: ArchiveObservation;
+  showMission?: boolean;
+  onSpectrum?: (r: SpectrumRequest) => void;
+}) {
   const mode = instrumentMode(o);
   return (
     <tr className="border-t border-slate-800/60 align-top hover:bg-slate-800/40">
@@ -135,7 +171,7 @@ function ObsRow({ o, showMission }: { o: ArchiveObservation; showMission?: boole
         {o.calib_level !== null && <span className="text-slate-600"> L{o.calib_level}</span>}
       </td>
       <td className="px-2 py-1">
-        <Links o={o} />
+        <Links o={o} onSpectrum={onSpectrum} />
       </td>
     </tr>
   );
@@ -145,10 +181,12 @@ function GroupRows({
   group,
   open,
   onToggle,
+  onSpectrum,
 }: {
   group: MissionGroup;
   open: Set<string>;
   onToggle: (key: string) => void;
+  onSpectrum: (r: SpectrumRequest) => void;
 }) {
   const missionOpen = open.has(group.name);
   return (
@@ -174,7 +212,13 @@ function GroupRows({
           const key = `${group.name}/${inst.name}`;
           const instOpen = open.has(key);
           return (
-            <GroupInstrument key={key} inst={inst} open={instOpen} onToggle={() => onToggle(key)} />
+            <GroupInstrument
+              key={key}
+              inst={inst}
+              open={instOpen}
+              onToggle={() => onToggle(key)}
+              onSpectrum={onSpectrum}
+            />
           );
         })}
     </>
@@ -185,10 +229,12 @@ function GroupInstrument({
   inst,
   open,
   onToggle,
+  onSpectrum,
 }: {
   inst: InstrumentGroup;
   open: boolean;
   onToggle: () => void;
+  onSpectrum: (r: SpectrumRequest) => void;
 }) {
   return (
     <>
@@ -204,7 +250,10 @@ function GroupInstrument({
           </button>
         </td>
       </tr>
-      {open && inst.rows.map((o, i) => <ObsRow key={`${o.archive}-${o.obs_id ?? i}-${i}`} o={o} />)}
+      {open &&
+        inst.rows.map((o, i) => (
+          <ObsRow key={`${o.archive}-${o.obs_id ?? i}-${i}`} o={o} onSpectrum={onSpectrum} />
+        ))}
     </>
   );
 }
@@ -220,6 +269,12 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [collapsed, setCollapsed] = useState(false);
   const [grouped, setGrouped] = useState(true);
+  const [spectrumRequest, setSpectrumRequest] = useState<SpectrumRequest | null>(null);
+  const requestSpectrum = (r: SpectrumRequest) => {
+    setSpectrumRequest(r);
+    setTab("spectrum");
+    setCollapsed(false);
+  };
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [radiusInput, setRadiusInput] = useState(String(radiusArcmin));
   const abortRef = useRef<AbortController | null>(null);
@@ -239,6 +294,7 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
     setLoadingObs(true);
     setLoadingHI(true);
     setInstrumentFilter(new Set());
+    setSpectrumRequest(null);
     searchArchives(ra, dec, radiusArcmin, ac.signal)
       .then((r) => !ac.signal.aborted && setArchives(r))
       .catch((e: unknown) => {
@@ -350,7 +406,7 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
         >
           {collapsed ? "▸" : "▾"}
         </button>
-        {(["obs", "hi"] as Tab[]).map((t) => (
+        {(["obs", "hi", "spectrum"] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -361,7 +417,9 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
           >
             {t === "obs"
               ? `Archive observations${archives ? ` (${allObs.length})` : ""}`
-              : `HI 21 cm${hi ? ` (${hiDetections.length})` : ""}`}
+              : t === "hi"
+                ? `HI 21 cm${hi ? ` (${hiDetections.length})` : ""}`
+                : `Spectrum${spectrumRequest ? " ●" : ""}`}
           </button>
         ))}
         <span className="ml-2 text-slate-500">
@@ -488,10 +546,16 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
                           group={g}
                           open={open}
                           onToggle={toggleOpen}
+                          onSpectrum={requestSpectrum}
                         />
                       ))
                     : observations.map((o, i) => (
-                        <ObsRow key={`${o.archive}-${o.obs_id ?? i}`} o={o} showMission />
+                        <ObsRow
+                          key={`${o.archive}-${o.obs_id ?? i}`}
+                          o={o}
+                          showMission
+                          onSpectrum={requestSpectrum}
+                        />
                       ))}
                   {observations.length === 0 && !loadingObs && (
                     <tr>
@@ -504,6 +568,8 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
               </table>
             </>
           )}
+
+          {tab === "spectrum" && <SpectrumPanel target={target} request={spectrumRequest} />}
 
           {tab === "hi" && hi && (
             <>
