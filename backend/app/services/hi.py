@@ -31,20 +31,39 @@ HI_SURVEYS: tuple[HISurvey, ...] = (
 
 # Column aliases across catalogues (matched case-insensitively).
 _ID = ("AGC", "HIPASS", "Name", "ID", "UGC", "NGC", "Seq", "recno")
-_NAME = ("Name", "OName", "OtherName", "HIPASS", "Nname")
+_NAME = ("Name", "OName", "OtherName", "SimbadName", "HIPASS", "Nname")
 _RA = ("RAJ2000", "_RAJ2000", "RAdeg", "RA_ICRS", "RA")
 _DEC = ("DEJ2000", "_DEJ2000", "DEdeg", "DE_ICRS", "DEC", "DE")
-_VEL = ("Vhel", "Vhelio", "V21", "RV", "cz", "Vh", "HV", "Vopt", "Vsys", "V")
+# HIPASS HICAT (VIII/73) reports the systemic velocity as RV50max (midpoint of the W50max
+# measurement) and the widths as W50max / W20max; RVsp is the velocity of the spectral peak.
+_VEL = ("Vhel", "Vhelio", "V21", "RV", "RV50max", "RVmom", "cz", "Vh", "HV", "Vopt", "Vsys", "V")
 _VEL_ERR = ("e_Vhel", "e_Vhelio", "e_V21", "e_RV", "e_cz", "e_V")
-_W50 = ("W50", "W50c", "Wc50", "W50h", "W50m")
+_W50 = ("W50", "W50max", "W50c", "Wc50", "W50h", "W50m")
 _W50_ERR = ("e_W50", "e_W50c")
-_W20 = ("W20", "W20c", "Wc20", "W20h", "W20m")
+_W20 = ("W20", "W20max", "W20c", "Wc20", "W20h", "W20m")
 _FLUX = ("FHI", "Sint", "S21", "SHI", "Fc", "Stot", "F21", "FI", "Sdv", "Flux")
 _FLUX_ERR = ("e_FHI", "e_Sint", "e_S21", "e_SHI", "e_Fc", "e_Flux")
 _SNR = ("SNR", "S/N", "snr")
 _RMS = ("rms", "RMS", "Srms")
 _DIST = ("Dist", "D", "Dmpc")
 _LOGMHI = ("logMHI", "logM(HI)", "logMH", "logM")
+
+
+def _position(ra_val: Any, dec_val: Any) -> tuple[float | None, float | None]:
+    """Coordinates in degrees from decimal values or sexagesimal strings ('03 33 33.4')."""
+    ra, dec = _float(ra_val), _float(dec_val)
+    if ra is not None and dec is not None:
+        return ra, dec
+    if isinstance(ra_val, str) and isinstance(dec_val, str):
+        try:
+            import astropy.units as u
+            from astropy.coordinates import SkyCoord
+
+            c = SkyCoord(ra_val, dec_val, unit=(u.hourangle, u.deg), frame="icrs")
+            return float(c.ra.deg), float(c.dec.deg)
+        except Exception:  # noqa: BLE001
+            return None, None
+    return ra, dec
 
 
 class HICrossMatcher:
@@ -99,8 +118,7 @@ class HICrossMatcher:
         flux = _float(first(r, *_FLUX))
         if vel is None and w50 is None and flux is None:
             return None  # not a spectral-line row (e.g. a notes table)
-        s_ra = _float(first(r, *_RA))
-        s_dec = _float(first(r, *_DEC))
+        s_ra, s_dec = _position(first(r, *_RA), first(r, *_DEC))
         sep = _float(first(r, "_r"))
         if sep is None:
             sep = angular_sep_arcmin(ra, dec, s_ra, s_dec)

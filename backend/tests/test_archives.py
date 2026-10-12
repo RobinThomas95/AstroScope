@@ -309,7 +309,11 @@ def test_hi_cross_match_maps_catalog_columns():
     assert d.source_id == "123" and d.velocity_kms == 1636 and d.w50_kms == 350
     assert d.flux_jy_kms == 12.3 and d.log_mhi == 9.8 and d.separation_arcmin == 0.3
     hip = by["VIII/73"].detections[0]
-    assert hip.source_id == "J0333-36" and hip.w20_kms == 390 and hip.velocity_kms == 1640
+    assert hip.source_id == "J0333-36" and hip.name == "HIPASSJ0333-36"
+    assert hip.velocity_kms == 1636.4 and hip.w50_kms == 373.7 and hip.w20_kms == 406.8
+    assert hip.flux_jy_kms == 174.7 and hip.rms_mjy == 0.0158
+    assert hip.ra_deg == pytest.approx(53.389, abs=1e-3)
+    assert hip.dec_deg == pytest.approx(-36.1408, abs=1e-3)
     spr = by["J/ApJS/160/149"]
     assert spr.status == "error" and "vizier slow" in spr.error
     assert res.radius_arcmin == pytest.approx(7.75)  # half the HIPASS beam
