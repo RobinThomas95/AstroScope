@@ -44,6 +44,11 @@ class Settings(BaseSettings):
         alias="ASTROSCOPE_MAST_TAP_URL",
         description="Override the MAST TAP endpoint (default: auto-detect)",
     )
+    cube_download_max_mb: float = Field(
+        default=600.0,
+        alias="ASTROSCOPE_CUBE_MAX_MB",
+        description="Largest cube product the server will download for spectrum extraction",
+    )
     mocserver_url: str = Field(
         default="https://alasky.cds.unistra.fr/MocServer/query", alias="ASTROSCOPE_MOCSERVER_URL"
     )

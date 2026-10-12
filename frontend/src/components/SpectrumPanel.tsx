@@ -1,16 +1,42 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-basic-dist-min";
 import createPlotlyComponent from "react-plotly.js/factory";
 import type { Annotation as PlotlyAnnotation, Data, Layout, Shape } from "plotly.js";
-import { ApiError, fetchHIProfile, fetchLines, fetchMuseSpectrum } from "../lib/api";
-import type { HIProfile, ResolvedTarget, SpectralLine, Spectrum1D, SpectrumRequest } from "../types";
+import {
+  ApiError,
+  fetchCubeProducts,
+  fetchCubeSpectrum,
+  fetchHIProfile,
+  fetchLines,
+  fetchMuseSpectrum,
+  fetchRadioLines,
+} from "../lib/api";
+import type {
+  CubeProduct,
+  HIProfile,
+  RadioLine,
+  ResolvedTarget,
+  SpectralLine,
+  Spectrum1D,
+  SpectrumRequest,
+} from "../types";
 
 const Plot = createPlotlyComponent(Plotly);
 const C_KMS = 299792.458;
+const COLORS = ["#7dd3fc", "#fb923c", "#a3e635", "#f472b6", "#facc15", "#c084fc"];
 
 interface Props {
   target: ResolvedTarget | null;
   request: SpectrumRequest | null;
+}
+
+interface Trace {
+  id: string;
+  label: string;
+  kind: "optical" | "radio";
+  spectrum: Spectrum1D;
+  color: string;
+  position: "target" | "cube";
 }
 
 interface UploadedHI {
@@ -37,80 +63,176 @@ export function parseHIText(text: string, name: string): UploadedHI {
   return { name, velocity, flux };
 }
 
+/** Scale a series so its largest |value| inside the window becomes 1. */
+function normalise(x: number[], y: (number | null)[], lo: number, hi: number): (number | null)[] {
+  let peak = 0;
+  for (let i = 0; i < x.length; i++) {
+    const v = y[i];
+    if (v !== null && x[i] >= lo && x[i] <= hi && Math.abs(v) > peak) peak = Math.abs(v);
+  }
+  if (!peak) for (const v of y) if (v !== null && Math.abs(v) > peak) peak = Math.abs(v);
+  return peak ? y.map((v) => (v === null ? null : v / peak)) : y;
+}
+
 export default function SpectrumPanel({ target, request }: Props) {
   const [radius, setRadius] = useState(3);
-  const [position, setPosition] = useState<"target" | "cube">("target");
   const [radiusInput, setRadiusInput] = useState("3");
   const [method, setMethod] = useState<"sum" | "mean">("sum");
-  const [spectrum, setSpectrum] = useState<Spectrum1D | null>(null);
+  const [position, setPosition] = useState<"target" | "cube">("target");
+  const [traces, setTraces] = useState<Trace[]>([]);
   const [lines, setLines] = useState<SpectralLine[]>([]);
+  const [radioLines, setRadioLines] = useState<RadioLine[]>([]);
   const [showLines, setShowLines] = useState(true);
   const [lineKinds, setLineKinds] = useState<"all" | "emission" | "absorption">("all");
   const [xMode, setXMode] = useState<XMode>("wavelength");
   const [refLine, setRefLine] = useState("Hα");
+  const [refRadio, setRefRadio] = useState("CO(2-1)");
   const [relative, setRelative] = useState(true);
+  const [normalised, setNormalised] = useState(false);
+  const [window, setWindow] = useState(1500);
   const [showHI, setShowHI] = useState(false);
   const [hiProfile, setHIProfile] = useState<HIProfile | null>(null);
   const [hiError, setHIError] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<UploadedHI | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [products, setProducts] = useState<CubeProduct[] | null>(null);
+  const [productsFor, setProductsFor] = useState<SpectrumRequest | null>(null);
+  const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  // Default to the cube centre when the target lies outside this cube's footprint.
-  useEffect(() => {
-    setPosition(request?.coversTarget === false && request.cubeRa !== null ? "cube" : "target");
-  }, [request]);
-
-  const useCube = position === "cube" && request?.cubeRa !== null && request?.cubeDec !== null;
-  const extractRa = useCube ? (request!.cubeRa as number) : target?.coordinates.ra_deg;
-  const extractDec = useCube ? (request!.cubeDec as number) : target?.coordinates.dec_deg;
 
   const z = target?.kinematics.redshift ?? null;
   const cz = target?.kinematics.velocity_kms ?? (z !== null ? z * C_KMS : null);
 
-  // Extract whenever the request, aperture or method changes.
+  // Line lists (optical: windowed to MUSE; radio: all, observed frequencies at z).
   useEffect(() => {
-    abortRef.current?.abort();
-    if (!request || !target || extractRa === undefined || extractDec === undefined) {
-      setSpectrum(null);
-      return;
-    }
     const ac = new AbortController();
-    abortRef.current = ac;
-    setLoading(true);
+    fetchLines(z, 3000, 25000, ac.signal).then((l) => !ac.signal.aborted && setLines(l)).catch(() => undefined);
+    fetchRadioLines(z, undefined, undefined, ac.signal).then((l) => !ac.signal.aborted && setRadioLines(l)).catch(() => undefined);
+    return () => ac.abort();
+  }, [z]);
+
+  // Reset everything when the target changes.
+  useEffect(() => {
+    setTraces([]);
+    setProducts(null);
+    setProductsFor(null);
+    setHIProfile(null);
+    setUploaded(null);
     setError(null);
-    fetchMuseSpectrum(
-      {
-        datalinkUrl: request.datalinkUrl,
-        ra: extractRa,
-        dec: extractDec,
-        radiusArcsec: radius,
-        method,
-      },
-      ac.signal,
-    )
-      .then((s) => !ac.signal.aborted && setSpectrum(s))
-      .catch((e: unknown) => {
-        if (ac.signal.aborted) return;
-        setError(e instanceof ApiError ? e.message : String(e));
-      })
-      .finally(() => !ac.signal.aborted && setLoading(false));
-    return () => ac.abort();
-  }, [request, target, radius, method, extractRa, extractDec]);
+  }, [target]);
 
-  // Line list for the spectrum's window.
+  const reference = useMemo(
+    () => lines.find((l) => l.name === refLine) ?? lines.find((l) => l.name === "Hα") ?? null,
+    [lines, refLine],
+  );
+  const referenceRadio = useMemo(
+    () => radioLines.find((l) => l.name === refRadio) ?? radioLines.find((l) => l.name === "CO(2-1)") ?? null,
+    [radioLines, refRadio],
+  );
+
+  const extractPosition = useCallback(
+    (req: SpectrumRequest, pos: "target" | "cube"): { ra: number; dec: number } | null => {
+      if (pos === "cube" && req.cubeRa !== null && req.cubeDec !== null) return { ra: req.cubeRa, dec: req.cubeDec };
+      if (!target) return null;
+      return { ra: target.coordinates.ra_deg, dec: target.coordinates.dec_deg };
+    },
+    [target],
+  );
+
+  const addTrace = useCallback((t: Trace) => {
+    setTraces((prev) => {
+      const others = prev.filter((x) => x.id !== t.id);
+      const color = COLORS[others.length % COLORS.length];
+      return [...others, { ...t, color }];
+    });
+  }, []);
+
+  const extractMuse = useCallback(
+    async (req: SpectrumRequest, pos: "target" | "cube") => {
+      const at = extractPosition(req, pos);
+      if (!at) return;
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setLoading(`Requesting a SODA cutout of ${req.label}…`);
+      setError(null);
+      try {
+        const spectrum = await fetchMuseSpectrum(
+          { datalinkUrl: req.datalinkUrl, ra: at.ra, dec: at.dec, radiusArcsec: radius, method },
+          ac.signal,
+        );
+        if (!ac.signal.aborted) addTrace({ id: req.datalinkUrl, label: req.label, kind: "optical", spectrum, color: "", position: pos });
+      } catch (e: unknown) {
+        if (!ac.signal.aborted) setError(e instanceof ApiError ? e.message : String(e));
+      } finally {
+        if (!ac.signal.aborted) setLoading(null);
+      }
+    },
+    [extractPosition, radius, method, addTrace],
+  );
+
+  const listAlmaProducts = useCallback(
+    async (req: SpectrumRequest) => {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setLoading(`Listing the products of ${req.label}…`);
+      setError(null);
+      try {
+        const lineGhz = referenceRadio?.observed_frequency_ghz ?? null;
+        const list = await fetchCubeProducts(req.datalinkUrl, req.spwRanges, lineGhz, ac.signal);
+        if (!ac.signal.aborted) {
+          setProducts(list);
+          setProductsFor(req);
+        }
+      } catch (e: unknown) {
+        if (!ac.signal.aborted) setError(e instanceof ApiError ? e.message : String(e));
+      } finally {
+        if (!ac.signal.aborted) setLoading(null);
+      }
+    },
+    [referenceRadio],
+  );
+
+  const extractAlma = useCallback(
+    async (req: SpectrumRequest, product: CubeProduct, pos: "target" | "cube") => {
+      const at = extractPosition(req, pos);
+      if (!at) return;
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setLoading(`Downloading ${product.name} (${product.size_mb ?? "?"} MB) and extracting… this can take a few minutes`);
+      setError(null);
+      try {
+        const spectrum = await fetchCubeSpectrum(
+          { productUrl: product.url, ra: at.ra, dec: at.dec, radiusArcsec: radius, method, maxMb: product.size_mb ? Math.ceil(product.size_mb * 1.2) : undefined },
+          ac.signal,
+        );
+        if (!ac.signal.aborted) {
+          addTrace({ id: product.url, label: `${req.label} spw${product.spw ?? "?"}`, kind: "radio", spectrum, color: "", position: pos });
+          setXMode("velocity");
+          setNormalised(true);
+        }
+      } catch (e: unknown) {
+        if (!ac.signal.aborted) setError(e instanceof ApiError ? e.message : String(e));
+      } finally {
+        if (!ac.signal.aborted) setLoading(null);
+      }
+    },
+    [extractPosition, radius, method, addTrace],
+  );
+
+  // React to a new request from the observation table.
   useEffect(() => {
-    if (!spectrum) return;
-    const wl = spectrum.wavelength_A;
-    const ac = new AbortController();
-    fetchLines(z, wl[0], wl[wl.length - 1], ac.signal)
-      .then((l) => !ac.signal.aborted && setLines(l))
-      .catch(() => undefined);
-    return () => ac.abort();
-  }, [spectrum, z]);
+    if (!request || !target) return;
+    const pos: "target" | "cube" = request.coversTarget === false && request.cubeRa !== null ? "cube" : "target";
+    setPosition(pos);
+    if (request.kind === "muse") void extractMuse(request, pos);
+    else void listAlmaProducts(request);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request, target]);
 
-  // HI template profile on demand.
+  // HI template on demand.
   useEffect(() => {
     if (!showHI || !target || hiProfile) return;
     const ac = new AbortController();
@@ -124,108 +246,83 @@ export default function SpectrumPanel({ target, request }: Props) {
     return () => ac.abort();
   }, [showHI, target, hiProfile]);
 
-  // Reset target-bound state when the target changes.
-  useEffect(() => {
-    setHIProfile(null);
-    setUploaded(null);
-  }, [target]);
-
-  const reference = useMemo(
-    () => lines.find((l) => l.name === refLine) ?? lines.find((l) => l.name === "Hα") ?? null,
-    [lines, refLine],
+  const velocityOf = useCallback(
+    (t: Trace, i: number): number | null => {
+      if (t.kind === "optical") {
+        if (!reference) return null;
+        const v = C_KMS * (t.spectrum.wavelength_A[i] / reference.rest_wavelength_A - 1);
+        return relative && cz !== null ? v - cz : v;
+      }
+      const f = t.spectrum.frequency_ghz?.[i];
+      if (!referenceRadio || f === null || f === undefined) return null;
+      const v = C_KMS * (1 - f / referenceRadio.rest_frequency_ghz); // radio convention
+      return relative && cz !== null ? v - cz : v;
+    },
+    [reference, referenceRadio, relative, cz],
   );
 
-  const toX = (wl: number): number => {
-    if (xMode === "wavelength" || !reference) return wl;
-    const v = C_KMS * (wl / reference.rest_wavelength_A - 1);
-    return relative && cz !== null ? v - cz : v;
-  };
-  const hiX = (v: number): number => (relative && cz !== null ? v - cz : v);
-
   const figure = useMemo(() => {
-    if (!spectrum) return null;
-    const x = spectrum.wavelength_A.map(toX);
-    const data: Data[] = [
-      {
-        x,
-        y: spectrum.flux,
+    if (!traces.length && !(xMode === "velocity" && showHI)) return null;
+    const centre = relative || cz === null ? 0 : cz;
+    const lo = centre - window;
+    const hi = centre + window;
+    const data: Data[] = [];
+    const visible = xMode === "wavelength" ? traces.filter((t) => t.kind === "optical") : traces;
+    for (const t of visible) {
+      const x = xMode === "wavelength" ? t.spectrum.wavelength_A : t.spectrum.wavelength_A.map((_, i) => velocityOf(t, i));
+      const xs = x.map((v) => (v === null ? NaN : v));
+      let y: (number | null)[] = t.spectrum.flux;
+      if (xMode === "velocity" && normalised) y = normalise(xs, y, lo, hi);
+      const radioAxis = xMode === "velocity" && t.kind === "radio" && !normalised;
+      data.push({
+        x: xs,
+        y,
         type: "scatter",
         mode: "lines",
-        name: `MUSE ${spectrum.method} (r=${spectrum.aperture_radius_arcsec}″, ${spectrum.n_spaxels} spx)`,
-        line: { color: "#7dd3fc", width: 1 },
-        hovertemplate:
-          xMode === "wavelength" ? "%{x:.1f} Å<br>%{y:.3g}<extra></extra>" : "%{x:.0f} km/s<br>%{y:.3g}<extra></extra>",
-      },
-    ];
-    if (spectrum.error) {
-      const upper = spectrum.flux.map((f, i) =>
-        f === null || spectrum.error![i] === null ? null : f + (spectrum.error![i] as number),
-      );
-      const lower = spectrum.flux.map((f, i) =>
-        f === null || spectrum.error![i] === null ? null : f - (spectrum.error![i] as number),
-      );
-      data.push(
-        { x, y: upper, type: "scatter", mode: "lines", line: { width: 0 }, showlegend: false, hoverinfo: "skip" },
-        {
-          x,
-          y: lower,
-          type: "scatter",
-          mode: "lines",
-          line: { width: 0 },
-          fill: "tonexty",
-          fillcolor: "rgba(125,211,252,0.15)",
-          name: "±1σ",
-          hoverinfo: "skip",
-        },
-      );
+        name: `${t.label} (r=${t.spectrum.aperture_radius_arcsec}″${t.position === "cube" ? ", cube centre" : ""})`,
+        line: { color: t.color, width: 1 },
+        yaxis: radioAxis ? "y2" : "y",
+        hovertemplate: xMode === "wavelength" ? "%{x:.1f} Å<br>%{y:.3g}<extra></extra>" : "%{x:.0f} km/s<br>%{y:.3g}<extra></extra>",
+      });
+      if (t.spectrum.error && !normalised && xMode === "wavelength") {
+        const upper = t.spectrum.flux.map((f, i) => (f === null || t.spectrum.error![i] === null ? null : f + (t.spectrum.error![i] as number)));
+        const lower = t.spectrum.flux.map((f, i) => (f === null || t.spectrum.error![i] === null ? null : f - (t.spectrum.error![i] as number)));
+        data.push(
+          { x: xs, y: upper, type: "scatter", mode: "lines", line: { width: 0 }, showlegend: false, hoverinfo: "skip" },
+          { x: xs, y: lower, type: "scatter", mode: "lines", line: { width: 0 }, fill: "tonexty", fillcolor: "rgba(125,211,252,0.15)", name: "±1σ", hoverinfo: "skip" },
+        );
+      }
     }
     const shapes: Partial<Shape>[] = [];
     const annotations: Partial<PlotlyAnnotation>[] = [];
-    if (showLines) {
+    if (showLines && xMode === "wavelength") {
       for (const l of lines) {
         if (l.observed_wavelength_A === null) continue;
         if (lineKinds !== "all" && l.kind !== "both" && l.kind !== lineKinds) continue;
-        const lx = toX(l.observed_wavelength_A);
         const color = l.kind === "absorption" ? "#f59e0b" : l.kind === "emission" ? "#f472b6" : "#a3e635";
-        shapes.push({ type: "line", xref: "x", yref: "paper", x0: lx, x1: lx, y0: 0, y1: 1, line: { color, width: 1, dash: "dot" } });
-        annotations.push({ x: lx, y: 1, xref: "x", yref: "paper", text: l.name, showarrow: false, textangle: -90, yanchor: "top", xanchor: "left", font: { size: 9, color } });
+        shapes.push({ type: "line", xref: "x", yref: "paper", x0: l.observed_wavelength_A, x1: l.observed_wavelength_A, y0: 0, y1: 1, line: { color, width: 1, dash: "dot" } });
+        annotations.push({ x: l.observed_wavelength_A, y: 1, xref: "x", yref: "paper", text: l.name, showarrow: false, textangle: -90, yanchor: "top", xanchor: "left", font: { size: 9, color } });
       }
     }
     if (xMode === "velocity" && cz !== null) {
-      const sx = relative ? 0 : cz;
-      shapes.push({ type: "line", xref: "x", yref: "paper", x0: sx, x1: sx, y0: 0, y1: 1, line: { color: "#fde047", width: 1 } });
+      shapes.push({ type: "line", xref: "x", yref: "paper", x0: centre, x1: centre, y0: 0, y1: 1, line: { color: "#fde047", width: 1 } });
     }
     const hiTraces: Data[] = [];
     if (xMode === "velocity" && showHI) {
-      if (hiProfile) {
-        hiTraces.push({
-          x: hiProfile.velocity_kms.map(hiX),
-          y: hiProfile.flux_jy,
-          type: "scatter",
-          mode: "lines",
-          name: `HI template (${hiProfile.survey ?? "catalogue"} ${hiProfile.source_id ?? ""})`,
-          yaxis: "y2",
-          line: { color: "#fb923c", width: 1.5, dash: "dash" },
-          hovertemplate: "%{x:.0f} km/s<br>%{y:.3f} Jy<extra>HI template</extra>",
-        });
-      }
-      if (uploaded) {
-        hiTraces.push({
-          x: uploaded.velocity.map(hiX),
-          y: uploaded.flux,
-          type: "scatter",
-          mode: "lines",
-          name: `HI ${uploaded.name}`,
-          yaxis: "y2",
-          line: { color: "#fbbf24", width: 1.5 },
-          hovertemplate: "%{x:.0f} km/s<br>%{y:.3f}<extra>HI</extra>",
-        });
-      }
+      const hiX = (v: number) => (relative && cz !== null ? v - cz : v);
+      const pushHI = (xv: number[], yv: number[], name: string, color: string, dash?: "dash") => {
+        const y = normalised ? normalise(xv, yv, lo, hi) : yv;
+        hiTraces.push({ x: xv, y, type: "scatter", mode: "lines", name, yaxis: normalised ? "y" : "y2", line: { color, width: 1.5, dash }, hovertemplate: "%{x:.0f} km/s<br>%{y:.3f}<extra>" + name + "</extra>" });
+      };
+      if (hiProfile) pushHI(hiProfile.velocity_kms.map(hiX), hiProfile.flux_jy, `HI template (${hiProfile.survey ?? "catalogue"})`, "#fbbf24", "dash");
+      if (uploaded) pushHI(uploaded.velocity.map(hiX), uploaded.flux, `HI ${uploaded.name}`, "#f97316");
     }
+    const hasY2 = [...data, ...hiTraces].some((d) => (d as { yaxis?: string }).yaxis === "y2");
+    const opticalUnit = traces.find((t) => t.kind === "optical")?.spectrum.flux_unit ?? "flux";
     const layout: Partial<Layout> = {
       autosize: true,
-      height: 340,
-      margin: { l: 60, r: hiTraces.length ? 60 : 20, t: 30, b: 45 },
+      height: 360,
+      margin: { l: 60, r: hasY2 ? 60 : 20, t: 30, b: 45 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(2,6,23,0.6)",
       font: { color: "#cbd5e1", size: 11 },
@@ -234,33 +331,25 @@ export default function SpectrumPanel({ target, request }: Props) {
           text:
             xMode === "wavelength"
               ? "Observed wavelength (Å)"
-              : `Velocity (km/s)${relative ? " relative to systemic" : ""}, from ${reference?.name ?? "Hα"}`,
+              : `Velocity (km/s)${relative ? " relative to systemic" : ""} · optical: ${reference?.name ?? "Hα"} · radio: ${referenceRadio?.name ?? "CO(2-1)"}`,
         },
         gridcolor: "#1e293b",
         zeroline: false,
-        // In velocity mode the full MUSE range spans ~10^5 km/s; start zoomed on the line.
-        ...(xMode === "velocity"
-          ? { range: [(relative || cz === null ? 0 : cz) - 1500, (relative || cz === null ? 0 : cz) + 1500] }
-          : {}),
+        ...(xMode === "velocity" ? { range: [lo, hi] } : {}),
       },
-      yaxis: { title: { text: spectrum.flux_unit }, gridcolor: "#1e293b", zeroline: false },
-      legend: { orientation: "h", y: -0.2, font: { size: 10 } },
+      yaxis: { title: { text: normalised && xMode === "velocity" ? "normalised amplitude" : opticalUnit }, gridcolor: "#1e293b", zeroline: false },
+      legend: { orientation: "h", y: -0.22, font: { size: 10 } },
+      showlegend: true,
       shapes,
       annotations,
       hovermode: "x unified",
     };
-    if (hiTraces.length) {
-      layout.yaxis2 = {
-        title: { text: "HI flux density (Jy)" },
-        overlaying: "y",
-        side: "right",
-        showgrid: false,
-        zeroline: false,
-      };
+    if (hasY2) {
+      const radioUnit = traces.find((t) => t.kind === "radio")?.spectrum.flux_unit ?? "Jy";
+      layout.yaxis2 = { title: { text: radioUnit }, overlaying: "y", side: "right", showgrid: false, zeroline: false };
     }
     return { data: [...data, ...hiTraces], layout };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spectrum, lines, showLines, lineKinds, xMode, reference, relative, cz, showHI, hiProfile, uploaded]);
+  }, [traces, lines, showLines, lineKinds, xMode, reference, referenceRadio, relative, cz, showHI, hiProfile, uploaded, normalised, window, velocityOf]);
 
   const onUpload = async (file: File | undefined) => {
     if (!file) return;
@@ -278,11 +367,13 @@ export default function SpectrumPanel({ target, request }: Props) {
     if (Number.isFinite(r) && r > 0 && r <= 30) setRadius(r);
   };
 
-  if (!request) {
+  if (!request && !traces.length) {
     return (
       <p className="px-3 py-3 text-xs text-slate-500">
-        Pick a public MUSE cube in the observation list and press “spectrum” to extract an
-        integrated 1-D spectrum at the target position (ESO DataLink / SODA cutout).
+        Press “spectrum” on a public MUSE cube or an ALMA cube in the observation list. MUSE
+        spectra come from an ESO SODA cutout; ALMA spectra from the spectral-window cube product
+        that contains the chosen line. Traces can be overplotted on a common velocity axis with
+        independently normalised amplitudes.
       </p>
     );
   }
@@ -290,35 +381,30 @@ export default function SpectrumPanel({ target, request }: Props) {
   return (
     <div className="flex flex-col gap-2 px-3 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="font-medium text-slate-100">{request.label}</span>
-        <select
-          value={position}
-          onChange={(e) => setPosition(e.target.value as "target" | "cube")}
-          className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200"
-          aria-label="Extraction position"
-          title={request.coversTarget === false ? "The target lies outside this cube's footprint" : ""}
-        >
-          <option value="target">
-            at target{request.coversTarget === false ? " (outside footprint!)" : ""}
-          </option>
-          <option value="cube" disabled={request.cubeRa === null}>
-            at cube centre
-            {request.cubeRa !== null ? ` (${request.cubeRa.toFixed(4)}, ${request.cubeDec?.toFixed(4)})` : ""}
-          </option>
-        </select>
+        {request && (
+          <>
+            <span className="font-medium text-slate-100">{request.label}</span>
+            <select value={position} onChange={(e) => setPosition(e.target.value as "target" | "cube")} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200" aria-label="Extraction position">
+              <option value="target">at target{request.coversTarget === false ? " (outside footprint!)" : ""}</option>
+              <option value="cube" disabled={request.cubeRa === null}>
+                at cube centre{request.cubeRa !== null ? ` (${request.cubeRa.toFixed(4)}, ${request.cubeDec?.toFixed(4)})` : ""}
+              </option>
+            </select>
+            {request.kind === "muse" && (
+              <button type="button" onClick={() => void extractMuse(request, position)} className="rounded border border-emerald-700 px-2 py-0.5 text-emerald-300 hover:bg-emerald-900/40">
+                extract
+              </button>
+            )}
+            {request.kind === "alma" && (
+              <button type="button" onClick={() => void listAlmaProducts(request)} className="rounded border border-emerald-700 px-2 py-0.5 text-emerald-300 hover:bg-emerald-900/40">
+                list products
+              </button>
+            )}
+          </>
+        )}
         <label className="flex items-center gap-1 text-slate-400">
           aperture r
-          <input
-            type="number"
-            min="0.2"
-            max="30"
-            step="0.5"
-            value={radiusInput}
-            onChange={(e) => setRadiusInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && applyRadius()}
-            className="w-14 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-100"
-            aria-label="Aperture radius in arcseconds"
-          />
+          <input type="number" min="0.2" max="30" step="0.5" value={radiusInput} onChange={(e) => setRadiusInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && applyRadius()} className="w-14 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-100" aria-label="Aperture radius in arcseconds" />
           ″
           <button type="button" onClick={applyRadius} className="rounded border border-slate-700 px-1.5 py-0.5 text-slate-200 hover:bg-slate-800">
             apply
@@ -328,21 +414,65 @@ export default function SpectrumPanel({ target, request }: Props) {
           <option value="sum">sum over aperture</option>
           <option value="mean">mean per spaxel</option>
         </select>
-        <label className="flex items-center gap-1 text-slate-300">
-          <input type="checkbox" checked={showLines} onChange={(e) => setShowLines(e.target.checked)} /> lines
-        </label>
-        <select value={lineKinds} onChange={(e) => setLineKinds(e.target.value as typeof lineKinds)} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200" aria-label="Line kinds">
-          <option value="all">emission + absorption</option>
-          <option value="emission">emission only</option>
-          <option value="absorption">absorption only</option>
-        </select>
-        <span className="text-slate-600">|</span>
+      </div>
+
+      {products && productsFor && (
+        <div className="rounded border border-slate-800 bg-slate-950/60 p-2">
+          <p className="mb-1 text-slate-300">
+            Cube products of {productsFor.label}. Line: {referenceRadio?.name ?? "CO(2-1)"}
+            {referenceRadio?.observed_frequency_ghz ? ` at ${referenceRadio.observed_frequency_ghz.toFixed(3)} GHz observed` : ""}.
+            <select value={refRadio} onChange={(e) => setRefRadio(e.target.value)} className="ml-2 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200" aria-label="Radio line">
+              {radioLines.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          </p>
+          {products.length === 0 && <p className="text-slate-500">No FITS cube products listed for this observation.</p>}
+          <ul className="space-y-0.5">
+            {products.filter((p) => p.kind === "cube").slice(0, 12).map((p) => (
+              <li key={p.url} className="flex flex-wrap items-center gap-2">
+                <span className={`rounded px-1 ${p.contains_line ? "bg-emerald-900/50 text-emerald-300" : "bg-slate-800 text-slate-400"}`}>
+                  {p.contains_line ? "contains line" : p.contains_line === false ? "other window" : "window ?"}
+                </span>
+                <span className="font-mono text-[11px] text-slate-200">{p.name}</span>
+                <span className="text-slate-500">
+                  spw {p.spw ?? "?"}{p.freq_min_ghz ? ` · ${p.freq_min_ghz.toFixed(2)}–${p.freq_max_ghz?.toFixed(2)} GHz` : ""} · {p.size_mb ?? "?"} MB
+                </span>
+                <button type="button" onClick={() => void extractAlma(productsFor, p, position)} className="rounded border border-emerald-700 px-1.5 py-0.5 text-emerald-300 hover:bg-emerald-900/40">
+                  extract
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {traces.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-slate-500">traces:</span>
+          {traces.map((t) => (
+            <span key={t.id} className="flex items-center gap-1 rounded border border-slate-700 px-1.5 py-0.5">
+              <span className="inline-block h-2 w-2 rounded-sm" style={{ background: t.color }} />
+              <span className="text-slate-200">{t.label}</span>
+              <span className="text-slate-500">{t.kind}</span>
+              <button type="button" onClick={() => setTraces((prev) => prev.filter((x) => x.id !== t.id))} className="text-slate-500 hover:text-rose-300" aria-label={`Remove ${t.label}`}>
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-1 text-slate-300">
           <input type="radio" name="xmode" checked={xMode === "wavelength"} onChange={() => setXMode("wavelength")} /> wavelength
         </label>
         <label className="flex items-center gap-1 text-slate-300">
-          <input type="radio" name="xmode" checked={xMode === "velocity"} onChange={() => setXMode("velocity")} /> velocity about
+          <input type="radio" name="xmode" checked={xMode === "velocity"} onChange={() => setXMode("velocity")} /> velocity
         </label>
+        <span className="text-slate-500">optical line</span>
         <select value={refLine} onChange={(e) => setRefLine(e.target.value)} disabled={xMode !== "velocity"} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200 disabled:opacity-50" aria-label="Reference line">
           {[...new Map(lines.map((l) => [l.name, l])).keys()].map((n) => (
             <option key={n} value={n}>
@@ -351,9 +481,35 @@ export default function SpectrumPanel({ target, request }: Props) {
           ))}
           {!lines.length && <option value="Hα">Hα</option>}
         </select>
+        <span className="text-slate-500">radio line</span>
+        <select value={refRadio} onChange={(e) => setRefRadio(e.target.value)} disabled={xMode !== "velocity"} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200 disabled:opacity-50" aria-label="Radio reference line">
+          {radioLines.map((l) => (
+            <option key={l.name} value={l.name}>
+              {l.name}
+            </option>
+          ))}
+          {!radioLines.length && <option value="CO(2-1)">CO(2-1)</option>}
+        </select>
         <label className="flex items-center gap-1 text-slate-300">
           <input type="checkbox" checked={relative} onChange={(e) => setRelative(e.target.checked)} disabled={xMode !== "velocity" || cz === null} /> relative to cz{cz !== null ? ` = ${cz.toFixed(0)}` : ""}
         </label>
+        <label className="flex items-center gap-1 text-slate-300" title="Scale each trace to its own peak inside the window: shapes compare, fluxes do not">
+          <input type="checkbox" checked={normalised} onChange={(e) => setNormalised(e.target.checked)} disabled={xMode !== "velocity"} /> normalise amplitudes
+        </label>
+        <label className="flex items-center gap-1 text-slate-400">
+          ± window
+          <input type="number" min="100" max="20000" step="100" value={window} onChange={(e) => setWindow(Number(e.target.value) || 1500)} disabled={xMode !== "velocity"} className="w-16 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-100" aria-label="Velocity window in km/s" />
+          km/s
+        </label>
+        <span className="text-slate-600">|</span>
+        <label className="flex items-center gap-1 text-slate-300">
+          <input type="checkbox" checked={showLines} onChange={(e) => setShowLines(e.target.checked)} /> lines
+        </label>
+        <select value={lineKinds} onChange={(e) => setLineKinds(e.target.value as typeof lineKinds)} className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200" aria-label="Line kinds">
+          <option value="all">emission + absorption</option>
+          <option value="emission">emission only</option>
+          <option value="absorption">absorption only</option>
+        </select>
         <span className="text-slate-600">|</span>
         <label className="flex items-center gap-1 text-slate-300" title="Overplot a 21 cm profile (velocity mode)">
           <input type="checkbox" checked={showHI} onChange={(e) => { setShowHI(e.target.checked); if (e.target.checked) setXMode("velocity"); }} /> HI profile
@@ -364,12 +520,12 @@ export default function SpectrumPanel({ target, request }: Props) {
         </label>
       </div>
 
-      {loading && <p className="text-slate-400">Requesting SODA cutout and extracting… (first call can take a minute)</p>}
+      {loading && <p className="text-slate-400">{loading}</p>}
       {error && <p className="text-rose-300">{error}</p>}
       {hiError && showHI && <p className="text-amber-300">HI profile: {hiError}</p>}
-      {spectrum?.warnings.map((w, i) => (
-        <p key={i} className="text-amber-300">{w}</p>
-      ))}
+      {traces.flatMap((t) => t.spectrum.warnings.map((w, i) => (
+        <p key={`${t.id}-${i}`} className="text-amber-300">{t.label}: {w}</p>
+      )))}
 
       {figure && (
         <Plot
@@ -384,11 +540,17 @@ export default function SpectrumPanel({ target, request }: Props) {
           }}
         />
       )}
-      {spectrum && (
+      {xMode === "velocity" && normalised && traces.length > 1 && (
         <p className="text-[11px] text-slate-500">
-          {spectrum.n_channels} channels, {spectrum.wavelength_A[0].toFixed(0)}–{spectrum.wavelength_A[spectrum.wavelength_A.length - 1].toFixed(0)} Å ·
-          pixel {spectrum.pixel_scale_arcsec?.toFixed(2)}″ · {String(spectrum.source.object ?? "")} {String(spectrum.source.date_obs ?? "")}
-          {spectrum.cached ? " · cached" : ""}
+          Amplitudes are normalised independently for a shape comparison: fluxes, angular
+          resolutions and calibrations differ between traces. Optical velocities use the optical
+          convention about {reference?.name ?? "Hα"}; radio velocities the radio convention about{" "}
+          {referenceRadio?.name ?? "CO(2-1)"}.
+        </p>
+      )}
+      {traces.length > 0 && (
+        <p className="text-[11px] text-slate-500">
+          {traces.map((t) => `${t.label}: ${t.spectrum.n_channels} ch, ${t.spectrum.n_spaxels} spx, pixel ${t.spectrum.pixel_scale_arcsec?.toFixed(2)}″${t.spectrum.cached ? ", cached" : ""}`).join(" · ")}
           {showHI && hiProfile && xMode === "velocity" ? ` · ${hiProfile.note}` : ""}
         </p>
       )}

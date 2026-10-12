@@ -500,9 +500,16 @@ class AlmaArchive(ObsCoreArchive):
         """ALMA's ObsCore lists one row per spectral window; collapse them per observation."""
         merged: dict[str, ArchiveObservation] = {}
         order: list[str] = []
+        spws: dict[str, list[str]] = {}
         for o in obs:
             base = _SPW_SUFFIX.sub("", o.obs_id or "")
             key = base or f"{o.extra.get('member_ous_uid')}|{o.target_name}|{o.mjd_obs}"
+            spw_match = _SPW_SUFFIX.search(o.obs_id or "")
+            spw_id = spw_match.group(0).rsplit(".", 1)[-1] if spw_match else "?"
+            f_lo = C_M_S / o.em_max_m / 1e9 if o.em_max_m else None
+            f_hi = C_M_S / o.em_min_m / 1e9 if o.em_min_m else None
+            spw_desc = f"{spw_id}:{f_lo:.3f}-{f_hi:.3f}" if f_lo and f_hi else f"{spw_id}:?"
+            spws.setdefault(key, []).append(spw_desc)
             if key not in merged:
                 copy = o.model_copy(deep=True)
                 copy.obs_id = base or o.obs_id
@@ -523,6 +530,8 @@ class AlmaArchive(ObsCoreArchive):
         out = []
         for key in order:
             m = merged[key]
+            # "spw:fmin-fmax GHz" per window, so a line can be matched to a product cube
+            m.extra["spw_ranges_ghz"] = "; ".join(sorted(spws.get(key, [])))
             band = band_label(m.em_min_m, m.em_max_m)
             bands = m.extra.get("band_list")
             m.band = f"Band {bands} ({band})" if bands and band else band or m.band

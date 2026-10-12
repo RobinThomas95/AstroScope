@@ -59,3 +59,41 @@ def spectral_lines(
             )
         )
     return out
+
+
+# (name, rest frequency in GHz)
+_RADIO_LINES: list[tuple[str, float]] = [
+    ("HI 21 cm", 1.420405752),
+    ("CO(1-0)", 115.2712018),
+    ("13CO(1-0)", 110.2013543),
+    ("HCN(1-0)", 88.6316023),
+    ("HCO+(1-0)", 89.1885247),
+    ("CS(2-1)", 97.9809533),
+    ("CN(1-0)", 113.4909702),
+    ("CO(2-1)", 230.5380000),
+    ("13CO(2-1)", 220.3986842),
+    ("C18O(2-1)", 219.5603541),
+    ("CS(5-4)", 244.9355565),
+    ("CO(3-2)", 345.7959899),
+    ("HCN(4-3)", 354.5054779),
+    ("HCO+(4-3)", 356.7342288),
+    ("[CI](1-0)", 492.1606510),
+    ("CO(4-3)", 461.0407682),
+    ("CO(6-5)", 691.4730763),
+    ("[CI](2-1)", 809.3419700),
+]
+
+
+def radio_lines(
+    z: float | None = None, fmin_ghz: float | None = None, fmax_ghz: float | None = None
+) -> list[dict]:
+    """Common mm/radio lines, optionally redshifted and restricted to an observed window."""
+    out = []
+    for name, rest in _RADIO_LINES:
+        obs = rest / (1.0 + z) if z is not None else None
+        if obs is not None and fmin_ghz is not None and obs < fmin_ghz:
+            continue
+        if obs is not None and fmax_ghz is not None and obs > fmax_ghz:
+            continue
+        out.append({"name": name, "rest_frequency_ghz": rest, "observed_frequency_ghz": obs})
+    return out

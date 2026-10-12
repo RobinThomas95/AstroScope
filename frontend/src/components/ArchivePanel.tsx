@@ -20,14 +20,12 @@ interface Props {
 
 type Tab = "obs" | "hi" | "spectrum" | "literature";
 
-function canExtract(o: ArchiveObservation): boolean {
-  return (
-    o.archive === "eso" &&
-    (o.instrument ?? "").toUpperCase() === "MUSE" &&
-    (o.dataproduct_type ?? "").toLowerCase() === "cube" &&
-    o.public !== false &&
-    !!o.access_url
-  );
+function extractKind(o: ArchiveObservation): "muse" | "alma" | null {
+  if (o.public === false || !o.access_url) return null;
+  if (o.archive === "eso" && (o.instrument ?? "").toUpperCase() === "MUSE" && (o.dataproduct_type ?? "").toLowerCase() === "cube")
+    return "muse";
+  if (o.archive === "alma" && (o.dataproduct_type ?? "").toLowerCase() === "cube") return "alma";
+  return null;
 }
 type SortKey = "date" | "exptime" | "sep" | "instrument";
 
@@ -107,17 +105,19 @@ function Links({ o, onSpectrum }: { o: ArchiveObservation; onSpectrum?: (r: Spec
     ) : null;
   return (
     <span className="flex flex-wrap gap-1">
-      {onSpectrum && canExtract(o) && (
+      {onSpectrum && extractKind(o) && (
         <button
           type="button"
           onClick={() =>
             onSpectrum({
+              kind: extractKind(o) as "muse" | "alma",
               datalinkUrl: o.access_url as string,
-              label: `MUSE ${o.obs_id ?? ""} ${o.date_obs?.slice(0, 10) ?? ""}`.trim(),
+              label: `${extractKind(o) === "alma" ? "ALMA" : "MUSE"} ${(o.obs_id ?? "").replace(/^uid:\/\//, "").slice(0, 40)} ${o.date_obs?.slice(0, 10) ?? ""}`.trim(),
               obsId: o.obs_id,
               cubeRa: o.ra_deg,
               cubeDec: o.dec_deg,
               coversTarget: o.covers_target,
+              spwRanges: typeof o.extra?.spw_ranges_ghz === "string" ? o.extra.spw_ranges_ghz : null,
             })
           }
           className="rounded border border-emerald-700 px-1.5 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-900/40"
@@ -287,6 +287,11 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
   const [collapsed, setCollapsed] = useState(false);
   const [grouped, setGrouped] = useState(true);
   const [spectrumRequest, setSpectrumRequest] = useState<SpectrumRequest | null>(null);
+  useEffect(() => {
+    const id = setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+    return () => clearTimeout(id);
+  }, [tab, collapsed]);
+
   const requestSpectrum = (r: SpectrumRequest) => {
     setSpectrumRequest(r);
     setTab("spectrum");
@@ -638,8 +643,13 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
             </>
           )}
 
-          {tab === "spectrum" && <SpectrumPanel target={target} request={spectrumRequest} />}
-          {tab === "literature" && <LiteraturePanel target={target} onOpenKeys={onOpenKeys} />}
+          {/* Spectrum and Literature stay mounted so their traces / results survive tab switches. */}
+          <div className={tab === "spectrum" ? "" : "hidden"}>
+            <SpectrumPanel target={target} request={spectrumRequest} />
+          </div>
+          <div className={tab === "literature" ? "" : "hidden"}>
+            <LiteraturePanel target={target} onOpenKeys={onOpenKeys} />
+          </div>
 
           {tab === "hi" && hi && (
             <>

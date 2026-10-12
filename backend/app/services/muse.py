@@ -130,12 +130,12 @@ def _find_cube(hdul):
     data_hdu = None
     for hdu in hdul:
         name = (hdu.name or "").upper()
-        if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 3 and name == "DATA":
+        if hdu.data is not None and getattr(hdu.data, "ndim", 0) in (3, 4) and name == "DATA":
             data_hdu = hdu
             break
     if data_hdu is None:
         for hdu in hdul:
-            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 3:
+            if hdu.data is not None and getattr(hdu.data, "ndim", 0) in (3, 4):
                 data_hdu = hdu
                 break
     if data_hdu is None:
@@ -150,24 +150,43 @@ def _find_cube(hdul):
 
 
 def _spectral_axis_A(header, n: int) -> tuple[np.ndarray, list[str]]:
-    """Wavelength of each channel in Angstrom."""
+    """Wavelength of each channel in Angstrom (frequency and velocity axes are converted)."""
     warnings: list[str] = []
+    c = 299792458.0
     try:
         from astropy.wcs import WCS
 
-        w = WCS(header)
-        spec = w.spectral
-        pix = np.arange(n)
-        coord = spec.pixel_to_world(pix)
+        spec = WCS(header).spectral
+        coord = spec.pixel_to_world(np.arange(n))
+        unit = str(coord.unit)
+        if unit in ("m / s", "km / s"):
+            raise ValueError("velocity axis")
         wl = coord.to_value("Angstrom")
         return np.asarray(wl, dtype=float), warnings
     except Exception as exc:  # noqa: BLE001 - fall back to linear keywords
         warnings.append(f"spectral WCS fallback: {type(exc).__name__}: {exc}")
-    crval = float(header.get("CRVAL3", 0.0))
-    cdelt = float(header.get("CD3_3", header.get("CDELT3", 1.0)))
-    crpix = float(header.get("CRPIX3", 1.0))
-    unit = str(header.get("CUNIT3", "Angstrom")).lower()
-    wl = crval + (np.arange(n) + 1 - crpix) * cdelt
+    # Linear axis from keywords; find which axis is spectral (3 for MUSE/ALMA cubes).
+    axis = 3
+    ctype = str(header.get(f"CTYPE{axis}", "WAVE")).upper()
+    crval = float(header.get(f"CRVAL{axis}", 0.0))
+    cdelt = float(header.get(f"CD{axis}_{axis}", header.get(f"CDELT{axis}", 1.0)))
+    crpix = float(header.get(f"CRPIX{axis}", 1.0))
+    unit = str(header.get(f"CUNIT{axis}", "")).lower().strip()
+    values = crval + (np.arange(n) + 1 - crpix) * cdelt
+    if ctype.startswith("FREQ"):
+        scale = {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9}.get(unit or "hz", 1.0)
+        freq = values * scale
+        return c / freq * 1e10, warnings
+    if ctype.startswith(("VRAD", "VELO", "VOPT")):
+        rest = header.get("RESTFRQ") or header.get("RESTFREQ")
+        if not rest:
+            warnings.append("velocity axis without RESTFRQ: cannot convert to wavelength")
+            return values, warnings
+        v = values * (1e3 if unit.startswith("km") else 1.0)
+        f0 = float(rest)
+        freq = f0 / (1 + v / c) if ctype.startswith("VOPT") else f0 * (1 - v / c)
+        return c / freq * 1e10, warnings
+    wl = values
     if unit in ("m", "meter", "metre"):
         wl = wl * 1e10
     elif unit in ("nm", "nanometer"):
@@ -192,6 +211,11 @@ def extract_spectrum(
         cube = np.asarray(data_hdu.data, dtype=float)
         var = np.asarray(stat_hdu.data, dtype=float) if stat_hdu is not None else None
         header = data_hdu.header
+        if cube.ndim == 4:  # radio cubes carry a Stokes axis first: take Stokes I
+            cube = cube[0]
+            if var is not None and var.ndim == 4:
+                var = var[0]
+            warnings.append("4-D cube: used the first Stokes plane")
         nz, ny, nx = cube.shape
         wl, w_warn = _spectral_axis_A(header, nz)
         warnings += w_warn

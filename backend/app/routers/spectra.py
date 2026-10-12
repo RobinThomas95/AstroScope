@@ -5,10 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
-from app.schemas.spectra import HIProfile, SpectralLine, Spectrum1D
+from app.schemas.spectra import CubeProductOut, HIProfile, SpectralLine, Spectrum1D
+from app.services import cubes
 from app.services.hi import get_hi_matcher
 from app.services.hiprofile import profile_from_detection
-from app.services.lines import spectral_lines
+from app.services.lines import radio_lines, spectral_lines
 from app.services.muse import MAX_CUTOUT_RADIUS_ARCSEC, _allowed, get_muse_service
 
 router = APIRouter(prefix="/api", tags=["spectra"])
@@ -74,3 +75,89 @@ async def hi_profile(
         )
     )
     return profile_from_detection(usable[0])
+
+
+@router.get("/lines/radio")
+async def lines_radio(
+    z: float | None = Query(None, ge=-0.01, le=20.0),
+    fmin_ghz: float | None = Query(None, gt=0),
+    fmax_ghz: float | None = Query(None, gt=0),
+) -> list[dict]:
+    return radio_lines(z, fmin_ghz, fmax_ghz)
+
+
+def _parse_spw_ranges(text: str | None) -> dict[int, tuple[float, float]]:
+    """'23:85.300-87.200; 25:87.200-89.000' -> {23: (85.3, 87.2), ...}"""
+    out: dict[int, tuple[float, float]] = {}
+    for part in (text or "").split(";"):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        spw, rng = part.split(":", 1)
+        try:
+            lo, hi = rng.split("-", 1)
+            out[int(spw)] = (float(lo), float(hi))
+        except ValueError:
+            continue
+    return out
+
+
+@router.get("/cubes/products", response_model=list[CubeProductOut])
+async def cube_products(
+    datalink_url: str = Query(..., description="DataLink URL of the observation (access_url)"),
+    spw_ranges: str | None = Query(None, description="'spw:fmin-fmax; ...' in GHz from ObsCore"),
+    line_ghz: float | None = Query(None, gt=0, description="Observed line frequency to match"),
+) -> list[CubeProductOut]:
+    """FITS products (cubes first) of an ALMA/ESO observation, with the window holding a line."""
+    if not cubes._allowed(datalink_url):
+        raise HTTPException(status_code=400, detail="datalink_url must point at ALMA or ESO")
+    try:
+        products = await run_in_threadpool(cubes.list_products, datalink_url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"DataLink: {type(exc).__name__}: {exc}"[:500]
+        ) from exc
+    ranges = _parse_spw_ranges(spw_ranges)
+    out = []
+    for p in products:
+        rng = ranges.get(p.spw) if p.spw is not None else None
+        contains = None
+        if rng and line_ghz:
+            contains = rng[0] <= line_ghz <= rng[1]
+        out.append(
+            CubeProductOut(
+                name=p.name,
+                url=p.url,
+                size_mb=p.size_mb,
+                spw=p.spw,
+                kind=p.kind,
+                semantics=p.semantics,
+                freq_min_ghz=rng[0] if rng else None,
+                freq_max_ghz=rng[1] if rng else None,
+                contains_line=contains,
+            )
+        )
+    out.sort(key=lambda o: (o.contains_line is not True, o.kind != "cube", o.size_mb or 0))
+    return out
+
+
+@router.get("/spectrum/cube", response_model=Spectrum1D)
+async def cube_spectrum(
+    product_url: str = Query(..., description="FITS cube product URL from /api/cubes/products"),
+    ra: float = Query(..., ge=0.0, lt=360.0),
+    dec: float = Query(..., ge=-90.0, le=90.0),
+    radius_arcsec: float = Query(3.0, gt=0.0, le=60.0),
+    method: str = Query("sum", pattern="^(sum|mean)$"),
+    max_mb: float | None = Query(None, gt=0, le=5000, description="Override the download cap"),
+) -> Spectrum1D:
+    """Download a cube product (cached on disk) and extract an aperture spectrum."""
+    if not cubes._allowed(product_url):
+        raise HTTPException(status_code=400, detail="product_url must point at ALMA or ESO")
+    try:
+        return await run_in_threadpool(
+            cubes.get_cube_service().spectrum, product_url, ra, dec, radius_arcsec, method, max_mb
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}"[:500]) from exc

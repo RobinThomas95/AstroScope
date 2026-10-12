@@ -1,10 +1,12 @@
 import { keyHeaders, loadKeys } from "./keys";
 import type {
   ArchiveSearch,
+  CubeProduct,
   HIProfile,
   HISearch,
   KeyStatus,
   LiteratureResult,
+  RadioLine,
   ResolvedTarget,
   SpectralLine,
   Spectrum1D,
@@ -180,4 +182,39 @@ export function postSynthesis(
     signal,
     keyHeaders(),
   );
+}
+
+export function fetchRadioLines(z: number | null, fminGhz?: number, fmaxGhz?: number, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (z !== null) params.set("z", String(z));
+  if (fminGhz !== undefined) params.set("fmin_ghz", String(fminGhz));
+  if (fmaxGhz !== undefined) params.set("fmax_ghz", String(fmaxGhz));
+  return getJson<RadioLine[]>(`/api/lines/radio?${params.toString()}`, signal);
+}
+
+export function fetchCubeProducts(
+  datalinkUrl: string,
+  spwRanges: string | null,
+  lineGhz: number | null,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ datalink_url: datalinkUrl });
+  if (spwRanges) params.set("spw_ranges", spwRanges);
+  if (lineGhz) params.set("line_ghz", String(lineGhz));
+  return getJson<CubeProduct[]>(`/api/cubes/products?${params.toString()}`, signal);
+}
+
+export function fetchCubeSpectrum(
+  opts: { productUrl: string; ra: number; dec: number; radiusArcsec: number; method: "sum" | "mean"; maxMb?: number },
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    product_url: opts.productUrl,
+    ra: opts.ra.toFixed(6),
+    dec: opts.dec.toFixed(6),
+    radius_arcsec: String(opts.radiusArcsec),
+    method: opts.method,
+  });
+  if (opts.maxMb) params.set("max_mb", String(opts.maxMb));
+  return getJson<Spectrum1D>(`/api/spectrum/cube?${params.toString()}`, signal);
 }

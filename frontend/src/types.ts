@@ -222,6 +222,7 @@ export interface Spectrum1D {
   error: (number | null)[] | null;
   flux_unit: string;
   wavelength_unit: string;
+  frequency_ghz: (number | null)[] | null;
   method: "sum" | "mean";
   n_spaxels: number;
   aperture_radius_arcsec: number;
@@ -248,8 +249,9 @@ export interface HIProfile {
   note: string;
 }
 
-/** A request to extract a spectrum from one MUSE cube. */
+/** A request to extract a spectrum from one cube (MUSE via SODA, or ALMA via a product file). */
 export interface SpectrumRequest {
+  kind: "muse" | "alma";
   datalinkUrl: string;
   label: string;
   obsId: string | null;
@@ -257,6 +259,26 @@ export interface SpectrumRequest {
   cubeRa: number | null;
   cubeDec: number | null;
   coversTarget: boolean | null;
+  /** ALMA: "spw:fmin-fmax; ..." in GHz, from ObsCore. */
+  spwRanges: string | null;
+}
+
+export interface CubeProduct {
+  name: string;
+  url: string;
+  size_mb: number | null;
+  spw: number | null;
+  kind: string;
+  semantics: string | null;
+  freq_min_ghz: number | null;
+  freq_max_ghz: number | null;
+  contains_line: boolean | null;
+}
+
+export interface RadioLine {
+  name: string;
+  rest_frequency_ghz: number;
+  observed_frequency_ghz: number | null;
 }
 
 // ---- Module 5 / 6: literature ----

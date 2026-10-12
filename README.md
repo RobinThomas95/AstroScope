@@ -132,10 +132,27 @@ double-horn 21 cm profile from the nearest catalogued HI detection (systemic vel
 integrated flux). It is a template for overplotting, clearly labelled as such; an observed
 profile can be uploaded in the UI as a two-column (velocity, flux) text file.
 
-The Spectrum tab in the panel plots the extracted spectrum with Plotly: aperture radius and
-sum/mean controls, emission/absorption line markers, a wavelength or velocity x-axis (velocity
-about a chosen line, optionally relative to the systemic velocity), and the HI profile on a
-secondary axis in velocity mode.
+### `GET /api/cubes/products` and `GET /api/spectrum/cube` (ALMA)
+
+ALMA has no SODA cutout service, so for an ALMA observation the backend lists the FITS cube
+products in its DataLink document (one per spectral window), marks the window that contains the
+chosen line at the target's redshift, downloads the selected product under a size cap
+(`ASTROSCOPE_CUBE_MAX_MB`, default 600 MB, cached on disk under the system temp directory) and
+extracts the same aperture spectrum, returning a frequency axis as well. Frequency and velocity
+cube axes (FREQ, VRAD, VOPT) are handled; 4-D cubes use the first Stokes plane.
+`GET /api/lines/radio` lists common mm lines (CO, 13CO, HCN, HCO+, [CI], ...) redshifted.
+
+### Spectrum tab
+
+Any number of traces (MUSE via SODA, ALMA via product cubes) can be overplotted. In velocity
+mode each optical trace is placed on a velocity axis about the chosen optical line (Hα by
+default, optical convention) and each radio trace about the chosen mm line (CO(2–1) by default,
+radio convention), optionally relative to the systemic velocity, within an adjustable window.
+"Normalise amplitudes" scales every trace to its own peak inside the window so line shapes can
+be compared directly; the fluxes, angular resolutions and calibrations of the traces are not
+comparable and the panel says so. The HI profile (catalogue template or an uploaded two-column
+file) joins the same axis. The Spectrum and Literature panels keep their state across tab
+switches.
 
 ## Viewer synchronisation
 
