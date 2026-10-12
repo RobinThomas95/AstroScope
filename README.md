@@ -82,10 +82,10 @@ matching record with non-zero coverage, downloads each MOC as FITS, unions them 
 caches the result for a day. `GET /api/overlays` shows which records each overlay resolved to,
 which is the first thing to check when an overlay shows "failed" in a pane's MOC menu.
 
-The MOCServer has no single all-observations record for JWST, MUSE or ALMA. JWST and HST use
-ESA's per-instrument image coverage maps, MUSE uses the CDS MUSE cube collections, and ALMA is
-limited to the PHANGS-ALMA and ALMA-IMF collections until the archive module derives footprints
-from the ALMA archive itself.
+The MOCServer has no single all-observations record for HST or JWST, so those overlays union
+ESA's per-instrument image coverage maps. It holds no downloadable coverage at all for the MUSE
+and ALMA cube collections, so MUSE and ALMA footprints are derived per target from the ESO and
+ALMA ObsCore services in the archive module instead.
 
 ## Viewer synchronisation
 

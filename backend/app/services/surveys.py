@@ -68,8 +68,10 @@ SURVEYS: list[Survey] = [
 ]
 
 # Expressions were chosen from a live listing of the MOCServer (Oct 2026). The server has no
-# single "all observations" record for JWST, MUSE or ALMA, so those overlays union several
-# records (per-instrument HiPS coverage maps for HST/JWST, CDS cube collections for MUSE/ALMA).
+# single "all observations" record for HST or JWST, so those overlays union ESA's
+# per-instrument image coverage maps. MUSE and ALMA are deliberately absent: the server lists
+# CDS cube collections for them but holds no downloadable MOC ("MOC not found"), so their
+# footprints are derived per target from the ESO and ALMA ObsCore services in the archive module.
 OVERLAYS: list[Overlay] = [
     Overlay(
         id="hst",
@@ -84,21 +86,6 @@ OVERLAYS: list[Overlay] = [
         color="#f472b6",
         description="Union of the ESA JWST NIRCam / MIRI / NIRISS image coverage maps",
         expressions=["ID=ESAVO/P/JWST/*"],
-    ),
-    Overlay(
-        id="muse",
-        label="MUSE cube coverage",
-        color="#a3e635",
-        description="Coverage of the public MUSE and MUSE-DEEP cube collections at CDS",
-        expressions=["ID=CDS/C/MUSE*"],
-    ),
-    Overlay(
-        id="alma",
-        label="ALMA (CDS cube collections)",
-        color="#fb923c",
-        description="PHANGS-ALMA and ALMA-IMF cube collections only; full ALMA footprints "
-        "come from the ALMA archive in the archive module",
-        expressions=["ID=CDS/C/*ALMA*"],
     ),
     Overlay(
         id="chandra",
