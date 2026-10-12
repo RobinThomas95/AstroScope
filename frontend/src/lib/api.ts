@@ -1,11 +1,15 @@
+import { keyHeaders, loadKeys } from "./keys";
 import type {
   ArchiveSearch,
   HIProfile,
   HISearch,
+  KeyStatus,
+  LiteratureResult,
   ResolvedTarget,
   SpectralLine,
   Spectrum1D,
   SurveyCatalog,
+  SynthesisResult,
 } from "../types";
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
@@ -23,8 +27,11 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { signal, headers: { Accept: "application/json" } });
+async function getJson<T>(path: string, signal?: AbortSignal, extraHeaders: Record<string, string> = {}): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    signal,
+    headers: { Accept: "application/json", ...extraHeaders },
+  });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -117,4 +124,60 @@ export function fetchHIProfile(ra: number, dec: number, sourceId?: string, signa
   const params = new URLSearchParams({ ra: ra.toFixed(6), dec: dec.toFixed(6) });
   if (sourceId) params.set("source_id", sourceId);
   return getJson<HIProfile>(`/api/hi/profile?${params.toString()}`, signal);
+}
+
+async function postJson<T>(path: string, body: unknown, signal?: AbortSignal, extraHeaders: Record<string, string> = {}): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    signal,
+    headers: { Accept: "application/json", "Content-Type": "application/json", ...extraHeaders },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const b = await res.json();
+      if (typeof b?.detail === "string") detail = b.detail;
+    } catch {
+      /* non-JSON */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
+export function fetchKeyStatus(signal?: AbortSignal) {
+  return getJson<KeyStatus>("/api/keys/status", signal);
+}
+
+export function fetchLlmModels(signal?: AbortSignal) {
+  return getJson<string[]>("/api/llm/models", signal, keyHeaders());
+}
+
+export function fetchLiterature(
+  q: string,
+  names: string[],
+  opts: { refereed?: boolean; maxRows?: number } = {},
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ q });
+  if (names.length) params.set("names", names.join(","));
+  if (opts.refereed) params.set("refereed", "true");
+  if (opts.maxRows) params.set("max_rows", String(opts.maxRows));
+  return getJson<LiteratureResult>(`/api/literature?${params.toString()}`, signal, keyHeaders());
+}
+
+export function postSynthesis(
+  q: string,
+  names: string[],
+  opts: { refereed?: boolean; maxAbstracts?: number } = {},
+  signal?: AbortSignal,
+) {
+  const model = loadKeys().geminiModel || undefined;
+  return postJson<SynthesisResult>(
+    "/api/synthesis",
+    { q, names, refereed: !!opts.refereed, max_abstracts: opts.maxAbstracts ?? 60, model },
+    signal,
+    keyHeaders(),
+  );
 }

@@ -12,8 +12,8 @@ Aladin Lite v3 sky views across different surveys.
 | 2 | Synced 2x2 Aladin Lite viewer with per-pane surveys and MOC overlays | implemented |
 | 3 | Archive cross-matching via ObsCore TAP (ESO, MAST, ALMA) + HI surveys | implemented |
 | 4 | ESO DataLink/SODA MUSE cutouts, 1D spectra, HI overplot | implemented |
-| 5 | ADS literature & bibliometrics | planned |
-| 6 | LLM scientific synthesis | planned |
+| 5 | ADS literature & bibliometrics | implemented |
+| 6 | Scientific synthesis with Google Gemini | implemented |
 
 ## Layout
 
@@ -38,7 +38,7 @@ frontend/           React 18 + TypeScript + Tailwind, Vite
 ## Quick start
 
 ```bash
-cp .env.example .env            # fill in ADS_DEV_KEY / LLM keys later (not needed for modules 1-2)
+cp .env.example .env            # optional server-side ADS / Gemini keys (see "API keys" below)
 make setup                      # python venv + npm install (picks the first Python 3.11+ on PATH)
 # make setup PY=python3.12      # or name the interpreter explicitly, e.g. inside a conda env
 make backend                    # http://localhost:8000  (OpenAPI docs at /docs)
@@ -147,9 +147,41 @@ sometimes from the render loop), so the controller mutes a pane while writing to
 drops callbacks that merely repeat the last state it pushed. A toggle disables sync; re-enabling
 snaps all panes to the pane that was navigated last.
 
-## Configuration
+## API keys (Modules 5 and 6)
 
-See `.env.example`. Keys for ADS and the LLM provider are read but not used until modules 5-6.
+Modules 1–4 need no keys. The literature module needs a NASA ADS token (free, from
+https://ui.adsabs.harvard.edu/user/settings/token) and the synthesis module a Google Gemini API
+key (free tier, from https://aistudio.google.com/apikey). There are two ways to provide them:
+
+- **Per user, in the browser**: the "keys" button in the header opens a dialog; keys are kept in
+  the browser's local storage and sent as request headers (`X-ADS-Token`, `X-Gemini-Key`). The
+  server never stores them. This is the mode for a public instance: every visitor uses their own
+  free keys and their own ADS quota.
+- **Server defaults** in `.env` (`ADS_DEV_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL`): convenient
+  for a private instance. A key pasted in the browser overrides the server default.
+
+`GET /api/keys/status` reports which server defaults exist; `GET /api/llm/models` validates a
+Gemini key and lists the models it can use.
+
+### `GET /api/literature?q=&names=&refereed=&max_rows=`
+
+Searches ADS for the target and its catalogue aliases (`object:` and `abs:` fields, astronomy
+collection, optionally refereed only), pages through up to 2000 records, and computes the
+bibliometrics server-side: papers per year (total and refereed), facilities mentioned (ADS
+`facility` field plus pattern matching of ~70 telescopes/instruments in titles, abstracts and
+keywords), keyword frequencies, citation distribution, total citations, h-index, most cited and
+most recent papers. The Literature tab plots the year histogram with facility chips that isolate
+e.g. HST, MUSE, ALMA, GMRT or MeerKAT, the citation distribution, and the paper table with ADS
+links.
+
+### `POST /api/synthesis`
+
+Selects abstracts (top cited plus most recent refereed, up to `max_abstracts`), sends them with
+the computed statistics to Gemini in JSON mode with a fixed response schema, and returns: a
+summary; consensus / established properties; peculiarities and open questions; key papers with
+reasons; keyword clusters by theme; facilities and their role; a reading of the publication trend.
+Bibcodes cited by the model that were not among the supplied abstracts are flagged in
+`warnings`. Results are cached per target, model and abstract set.
 
 ## Notes for verification
 
@@ -168,6 +200,8 @@ is tested against faked service responses. The first live run should confirm:
 4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS detections for NGC 1365 (ALFALFA does
    not cover Dec −36).
 5. In the observation list, press "spectrum" on a public MUSE cube of NGC 1365: the Spectrum tab
-   should show a 4750–9350 Å spectrum with Hα, [NII] and [SII] marked near 6600 Å. The SODA
-   request itself was exercised offline against a synthetic cube; the first live call confirms
-   that ESO's DataLink exposes the SODA descriptor pyvo expects.
+   should show a 4750–9350 Å spectrum with Hα, [NII] and [SII] marked near 6600 Å (verified live).
+6. With an ADS token set, the Literature tab lists several hundred refereed papers on NGC 1365
+   with a year histogram; with a Gemini key, "synthesise" returns the structured briefing.
+   Both services were exercised offline with canned responses; the first live calls confirm the
+   ADS query syntax and the Gemini JSON-schema mode for the configured model.

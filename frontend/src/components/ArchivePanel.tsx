@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ARCHIVE_KEYS, ApiError, searchArchives, searchHI } from "../lib/api";
+import LiteraturePanel from "./LiteraturePanel";
 import SpectrumPanel from "./SpectrumPanel";
 import type {
   ArchiveObservation,
@@ -14,9 +15,10 @@ interface Props {
   target: ResolvedTarget | null;
   radiusArcmin: number;
   onRadiusChange: (r: number) => void;
+  onOpenKeys: () => void;
 }
 
-type Tab = "obs" | "hi" | "spectrum";
+type Tab = "obs" | "hi" | "spectrum" | "literature";
 
 function canExtract(o: ArchiveObservation): boolean {
   return (
@@ -271,7 +273,7 @@ function GroupInstrument({
   );
 }
 
-export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: Props) {
+export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onOpenKeys }: Props) {
   const [tab, setTab] = useState<Tab>("obs");
   const [archiveResults, setArchiveResults] = useState<ArchiveResult[]>([]);
   const [pendingArchives, setPendingArchives] = useState<Set<string>>(new Set());
@@ -463,7 +465,7 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
         >
           {collapsed ? "▸" : "▾"}
         </button>
-        {(["obs", "hi", "spectrum"] as Tab[]).map((t) => (
+        {(["obs", "hi", "spectrum", "literature"] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -476,7 +478,9 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
               ? `Archive observations${archives ? ` (${allObs.length})` : ""}`
               : t === "hi"
                 ? `HI 21 cm${hi ? ` (${hiDetections.length})` : ""}`
-                : `Spectrum${spectrumRequest ? " ●" : ""}`}
+                : t === "spectrum"
+                  ? `Spectrum${spectrumRequest ? " ●" : ""}`
+                  : "Literature"}
           </button>
         ))}
         <span className="ml-2 text-slate-500">
@@ -635,6 +639,7 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
           )}
 
           {tab === "spectrum" && <SpectrumPanel target={target} request={spectrumRequest} />}
+          {tab === "literature" && <LiteraturePanel target={target} onOpenKeys={onOpenKeys} />}
 
           {tab === "hi" && hi && (
             <>

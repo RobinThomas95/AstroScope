@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AladinGrid from "./components/AladinGrid";
 import ArchivePanel from "./components/ArchivePanel";
+import KeysDialog from "./components/KeysDialog";
 import TargetCard from "./components/TargetCard";
 import TargetSearch from "./components/TargetSearch";
 import { ApiError, fetchSurveyCatalog, resolveTarget } from "./lib/api";
@@ -13,6 +14,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [radiusArcmin, setRadiusArcmin] = useState(5);
+  const [keysOpen, setKeysOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const [catalogAttempt, setCatalogAttempt] = useState(0);
@@ -74,7 +76,16 @@ export default function App() {
         <div className="ml-auto flex-1 max-w-2xl">
           <TargetSearch busy={busy} onSearch={search} />
         </div>
+        <button
+          type="button"
+          onClick={() => setKeysOpen(true)}
+          className="rounded border border-slate-700 px-2 py-1 text-sm text-slate-300 hover:bg-slate-800"
+          title="API keys (ADS, Gemini)"
+        >
+          ⚙ keys
+        </button>
       </header>
+      <KeysDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
 
       {error && (
         <div className="border-b border-rose-900 bg-rose-950/60 px-4 py-2 text-sm text-rose-200">
@@ -107,6 +118,7 @@ export default function App() {
                   target={target}
                   radiusArcmin={radiusArcmin}
                   onRadiusChange={setRadiusArcmin}
+                  onOpenKeys={() => setKeysOpen(true)}
                 />
               </div>
             </>

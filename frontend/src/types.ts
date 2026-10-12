@@ -258,3 +258,95 @@ export interface SpectrumRequest {
   cubeDec: number | null;
   coversTarget: boolean | null;
 }
+
+// ---- Module 5 / 6: literature ----
+
+export interface Paper {
+  bibcode: string;
+  title: string | null;
+  first_author: string | null;
+  authors: string[];
+  year: number | null;
+  pubdate: string | null;
+  journal: string | null;
+  doctype: string | null;
+  refereed: boolean;
+  citation_count: number;
+  keywords: string[];
+  facilities: string[];
+  abstract: string | null;
+  ads_url: string;
+}
+
+export interface YearCount {
+  year: number;
+  count: number;
+  refereed: number;
+}
+
+export interface NamedCount {
+  name: string;
+  count: number;
+}
+
+export interface CitationBin {
+  label: string;
+  min: number;
+  max: number | null;
+  count: number;
+}
+
+export interface Bibliometrics {
+  total: number;
+  refereed: number;
+  years: YearCount[];
+  facilities: NamedCount[];
+  keywords: NamedCount[];
+  citation_bins: CitationBin[];
+  total_citations: number;
+  h_index: number;
+  top_cited: string[];
+  most_recent: string[];
+}
+
+export interface LiteratureResult {
+  query: string;
+  names: string[];
+  ads_query: string;
+  num_found: number;
+  truncated: boolean;
+  papers: Paper[];
+  metrics: Bibliometrics;
+  token_source: "header" | "server";
+  cached: boolean;
+}
+
+export interface Synthesis {
+  summary: string;
+  consensus: string[];
+  open_questions: string[];
+  key_papers: { bibcode: string; reason: string }[];
+  keyword_clusters: { theme: string; keywords: string[]; bibcodes: string[] }[];
+  facilities: { name: string; role: string }[];
+  publication_trend: string;
+}
+
+export interface SynthesisResult {
+  query: string;
+  model: string;
+  provider: string;
+  n_abstracts: number;
+  bibcodes_used: string[];
+  synthesis: Synthesis;
+  prompt_tokens: number | null;
+  output_tokens: number | null;
+  key_source: "header" | "server";
+  cached: boolean;
+  warnings: string[];
+}
+
+export interface KeyStatus {
+  ads_server_key: boolean;
+  gemini_server_key: boolean;
+  gemini_model: string;
+}

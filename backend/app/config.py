@@ -22,8 +22,8 @@ class Settings(BaseSettings):
 
     # External API keys (used by later modules; optional for Modules 1-2).
     ads_dev_key: str | None = Field(default=None, alias="ADS_DEV_KEY")
-    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    gemini_model: str | None = Field(default=None, alias="GEMINI_MODEL")
 
     # Server
     host: str = Field(default="0.0.0.0", alias="ASTROSCOPE_HOST")
