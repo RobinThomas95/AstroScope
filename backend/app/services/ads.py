@@ -91,7 +91,9 @@ class AdsClient:
         res.raise_for_status()
         return res.json()
 
-    def search(self, query: str, max_rows: int = MAX_ROWS) -> tuple[list[dict[str, Any]], int]:
+    def search(
+        self, query: str, max_rows: int = MAX_ROWS, fields: str = FIELDS
+    ) -> tuple[list[dict[str, Any]], int]:
         """All ADS documents for a query (paged), and the total number found."""
         docs: list[dict[str, Any]] = []
         start = 0
@@ -101,7 +103,7 @@ class AdsClient:
             data = self._get(
                 {
                     "q": query,
-                    "fl": FIELDS,
+                    "fl": fields,
                     "rows": rows,
                     "start": start,
                     "sort": "citation_count desc",

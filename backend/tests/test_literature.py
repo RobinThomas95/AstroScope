@@ -267,3 +267,31 @@ def test_synthesis_endpoint(client, monkeypatch):
         headers={"X-ADS-Token": "tok", "X-Gemini-Key": "bad"},
     )
     assert bad.status_code == 401
+
+
+def test_real_client_pages_and_reports_400(monkeypatch):
+    import httpx
+
+    from app.services.ads import AdsClient, AdsQueryError
+
+    calls = []
+
+    def fake_get(self, url, params=None, headers=None):
+        calls.append(dict(params))
+        if "object:" in params["q"]:
+            return httpx.Response(
+                400, json={"error": "object query failed"}, request=httpx.Request("GET", url)
+            )
+        start = params["start"]
+        docs = [{"bibcode": f"b{start + i}"} for i in range(min(params["rows"], 3 - start))]
+        return httpx.Response(
+            200, json={"response": {"numFound": 3, "docs": docs}}, request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    c = AdsClient("tok")
+    with pytest.raises(AdsQueryError, match="object query failed"):
+        c.search('object:"X"')
+    docs, n = c.search("abs:x", max_rows=10, fields="bibcode")
+    assert n == 3 and [d["bibcode"] for d in docs] == ["b0", "b1", "b2"]
+    assert calls[-1]["fl"] == "bibcode" and "Bearer" not in str(calls)
