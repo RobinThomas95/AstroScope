@@ -28,6 +28,7 @@ FIELDS = (
     "bibcode,title,author,year,pubdate,pub,doctype,property,citation_count,keyword,abstract,"
     "facility"
 )
+FIELDS_MINIMAL = FIELDS.replace(",facility", "")
 PAGE = 200
 MAX_ROWS = 2000
 CITATION_BINS = [(0, 0), (1, 4), (5, 19), (20, 49), (50, 99), (100, 499), (500, None)]
@@ -37,7 +38,11 @@ def _escape(value: str) -> str:
     return value.replace('"', '\\"')
 
 
-def build_query(names: list[str], refereed_only: bool = False) -> str:
+class AdsQueryError(ValueError):
+    """ADS rejected the query (HTTP 400); the message is ADS's own."""
+
+
+def build_query(names: list[str], refereed_only: bool = False, use_object: bool = True) -> str:
     """ADS query matching the object field or the abstract/title for any of the names."""
     clean = []
     for n in names:
@@ -46,7 +51,7 @@ def build_query(names: list[str], refereed_only: bool = False) -> str:
             clean.append(n)
     if not clean:
         raise ValueError("No object names to search for")
-    terms = [f'object:"{_escape(n)}"' for n in clean]
+    terms = [f'object:"{_escape(n)}"' for n in clean] if use_object else []
     # Catalogue names often appear without the space ("NGC1365") in titles/abstracts.
     for n in clean:
         compact = n.replace(" ", "")
@@ -77,6 +82,12 @@ class AdsClient:
             raise PermissionError("ADS rejected the token (401 Unauthorized)")
         if res.status_code == 429:
             raise RuntimeError("ADS rate limit reached (429); try again later")
+        if res.status_code == 400:
+            try:
+                msg = res.json().get("error") or res.text[:300]
+            except Exception:  # noqa: BLE001
+                msg = res.text[:300]
+            raise AdsQueryError(f"ADS rejected the query: {msg}")
         res.raise_for_status()
         return res.json()
 
@@ -203,8 +214,28 @@ class LiteratureService:
             hit = self._cache.get(key)
             if hit and hit[0] > now:
                 return hit[1].model_copy(update={"cached": True})
-        ads_query = build_query(names, refereed_only)
-        docs, num_found = self.client_factory(token).search(ads_query, max_rows=max_rows)
+        client = self.client_factory(token)
+        # ADS answers 400 when its object: resolution fails or a field is unknown; fall back
+        # progressively rather than failing the whole search.
+        attempts = [
+            (build_query(names, refereed_only, use_object=True), FIELDS),
+            (build_query(names, refereed_only, use_object=False), FIELDS),
+            (build_query(names, refereed_only, use_object=False), FIELDS_MINIMAL),
+        ]
+        last_error: Exception | None = None
+        docs: list[dict[str, Any]] = []
+        num_found = 0
+        ads_query = attempts[0][0]
+        for ads_query, fields in attempts:
+            try:
+                docs, num_found = client.search(ads_query, max_rows=max_rows, fields=fields)
+                last_error = None
+                break
+            except AdsQueryError as exc:
+                log.warning("ADS query rejected (%s); trying a simpler form", exc)
+                last_error = exc
+        if last_error is not None:
+            raise last_error
         papers = [to_paper(d) for d in docs if d.get("bibcode")]
         result = LiteratureResult(
             query=query,

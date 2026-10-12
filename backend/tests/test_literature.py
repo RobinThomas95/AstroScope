@@ -112,10 +112,18 @@ class FakeAds:
     def __init__(self, token):
         self.token = token
 
-    def search(self, query, max_rows=2000):
+    def search(self, query, max_rows=2000, fields=""):
         FakeAds.calls.append((query, max_rows))
         if self.token == "bad":
             raise PermissionError("ADS rejected the token (401 Unauthorized)")
+        if self.token == "no-object" and "object:" in query:
+            from app.services.ads import AdsQueryError
+
+            raise AdsQueryError("ADS rejected the query: object query failed")
+        if self.token == "no-facility" and ("object:" in query or "facility" in fields):
+            from app.services.ads import AdsQueryError
+
+            raise AdsQueryError("ADS rejected the query: unknown field facility")
         return [dict(d) for d in DOCS], 4
 
 
@@ -157,6 +165,17 @@ def test_literature_service_caches():
     assert r.metrics.h_index == 3
     again = svc.search("NGC 1365", ["FCC 121", "NGC 1365"], "tok", "header")
     assert again.cached and len(FakeAds.calls) == 1
+
+
+def test_literature_falls_back_when_ads_rejects_the_query():
+    FakeAds.calls.clear()
+    svc = LiteratureService(client_factory=FakeAds)
+    r = svc.search("NGC 1365", ["NGC 1365"], "no-object", "header")
+    assert r.metrics.total == 4 and "object:" not in r.ads_query and 'abs:"NGC 1365"' in r.ads_query
+    assert len(FakeAds.calls) == 2
+    FakeAds.calls.clear()
+    r2 = svc.search("NGC 1365", ["NGC 1365"], "no-facility", "header")
+    assert r2.metrics.total == 4 and len(FakeAds.calls) == 3
 
 
 def test_select_abstracts_and_prompt():
