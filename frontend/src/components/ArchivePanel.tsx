@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, searchArchives, searchHI } from "../lib/api";
+import { ARCHIVE_KEYS, ApiError, searchArchives, searchHI } from "../lib/api";
 import SpectrumPanel from "./SpectrumPanel";
 import type {
   ArchiveObservation,
+  ArchiveResult,
   ArchiveSearch,
   HISearch,
   ResolvedTarget,
@@ -272,7 +273,9 @@ function GroupInstrument({
 
 export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: Props) {
   const [tab, setTab] = useState<Tab>("obs");
-  const [archives, setArchives] = useState<ArchiveSearch | null>(null);
+  const [archiveResults, setArchiveResults] = useState<ArchiveResult[]>([]);
+  const [pendingArchives, setPendingArchives] = useState<Set<string>>(new Set());
+  const [searched, setSearched] = useState(false);
   const [hi, setHI] = useState<HISearch | null>(null);
   const [loadingObs, setLoadingObs] = useState(false);
   const [loadingHI, setLoadingHI] = useState(false);
@@ -295,7 +298,8 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
   useEffect(() => {
     abortRef.current?.abort();
     if (!target) {
-      setArchives(null);
+      setArchiveResults([]);
+      setSearched(false);
       setHI(null);
       return;
     }
@@ -307,13 +311,34 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
     setLoadingHI(true);
     setInstrumentFilter(new Set());
     setSpectrumRequest(null);
-    searchArchives(ra, dec, radiusArcmin, ac.signal)
-      .then((r) => !ac.signal.aborted && setArchives(r))
-      .catch((e: unknown) => {
-        if (ac.signal.aborted) return;
-        setError(e instanceof ApiError ? e.message : String(e));
-      })
-      .finally(() => !ac.signal.aborted && setLoadingObs(false));
+    setArchiveResults([]);
+    setSearched(true);
+    setPendingArchives(new Set(ARCHIVE_KEYS));
+    for (const key of ARCHIVE_KEYS) {
+      searchArchives(ra, dec, radiusArcmin, [key], ac.signal)
+        .then((r) => {
+          if (ac.signal.aborted) return;
+          setArchiveResults((prev) => [...prev.filter((x) => x.archive !== key), ...r.results]);
+        })
+        .catch((e: unknown) => {
+          if (ac.signal.aborted) return;
+          const msg = e instanceof ApiError ? e.message : String(e);
+          setArchiveResults((prev) => [
+            ...prev.filter((x) => x.archive !== key),
+            { archive: key, label: key.toUpperCase(), status: "error", error: msg, table: null,
+              count: 0, truncated: false, elapsed_s: null, observations: [] },
+          ]);
+        })
+        .finally(() => {
+          if (ac.signal.aborted) return;
+          setPendingArchives((prev) => {
+            const next = new Set(prev);
+            next.delete(key);
+            if (next.size === 0) setLoadingObs(false);
+            return next;
+          });
+        });
+    }
     searchHI(ra, dec, undefined, ac.signal)
       .then((r) => !ac.signal.aborted && setHI(r))
       .catch((e: unknown) => {
@@ -323,6 +348,26 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
       .finally(() => !ac.signal.aborted && setLoadingHI(false));
     return () => ac.abort();
   }, [target, radiusArcmin]);
+
+  const archives = useMemo<ArchiveSearch | null>(() => {
+    if (!searched || !target) return null;
+    const ordered = ARCHIVE_KEYS.map((k) => archiveResults.find((r) => r.archive === k)).filter(
+      (r): r is ArchiveResult => !!r,
+    );
+    const counts: Record<string, number> = {};
+    for (const r of ordered)
+      for (const o of r.observations) {
+        const k = instrumentKey(o);
+        counts[k] = (counts[k] ?? 0) + 1;
+      }
+    return {
+      ra_deg: target.coordinates.ra_deg,
+      dec_deg: target.coordinates.dec_deg,
+      radius_arcmin: radiusArcmin,
+      results: ordered,
+      instrument_counts: Object.fromEntries(Object.entries(counts).sort()),
+    };
+  }, [searched, target, archiveResults, radiusArcmin]);
 
   const allObs = useMemo(
     () => (archives ? archives.results.flatMap((r) => r.observations) : []),
@@ -479,11 +524,19 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange }: P
                     title={r.error ?? r.table ?? ""}
                     className={`rounded px-1.5 py-0.5 ${
                       r.status === "ok"
-                        ? "bg-emerald-900/50 text-emerald-300"
+                        ? r.error
+                          ? "bg-amber-900/50 text-amber-200"
+                          : "bg-emerald-900/50 text-emerald-300"
                         : "bg-rose-900/50 text-rose-300"
                     }`}
                   >
                     {r.label}: {r.status === "ok" ? `${r.count}${r.truncated ? "+" : ""}` : "error"}
+                    {r.status === "ok" && r.error ? " (partial)" : ""}
+                  </span>
+                ))}
+                {[...pendingArchives].map((k) => (
+                  <span key={k} className="animate-pulse rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">
+                    {k.toUpperCase()}: querying…
                   </span>
                 ))}
                 <span className="mx-1 text-slate-600">|</span>

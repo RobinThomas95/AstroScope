@@ -52,6 +52,7 @@ export function searchArchives(
   ra: number,
   dec: number,
   radiusArcmin: number,
+  archives?: string[],
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
@@ -59,8 +60,11 @@ export function searchArchives(
     dec: dec.toFixed(6),
     radius_arcmin: String(radiusArcmin),
   });
+  if (archives?.length) params.set("archives", archives.join(","));
   return getJson<ArchiveSearch>(`/api/archives?${params.toString()}`, signal);
 }
+
+export const ARCHIVE_KEYS = ["eso", "mast", "alma"] as const;
 
 export function searchHI(ra: number, dec: number, radiusArcmin?: number, signal?: AbortSignal) {
   const params = new URLSearchParams({ ra: ra.toFixed(6), dec: dec.toFixed(6) });

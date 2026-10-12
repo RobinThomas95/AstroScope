@@ -392,10 +392,56 @@ class MastArchive(ObsCoreArchive):
             self.discover()
         except Exception as exc:  # noqa: BLE001
             return self._error(exc, t0)
-        return super().search(ra, dec, radius_deg, instruments, maxrec)
+        # One query per collection, in parallel: each is smaller and MAST answers faster.
+        results: list[ArchiveResult] = []
+        with ThreadPoolExecutor(max_workers=len(self.collections)) as pool:
+            futures = {
+                coll: pool.submit(
+                    self._search_collection, coll, ra, dec, radius_deg, instruments, maxrec
+                )
+                for coll in self.collections
+            }
+            results = [futures[c].result() for c in self.collections]
+        obs = [o for r in results for o in r.observations]
+        obs.sort(key=lambda o: (o.mjd_obs is None, -(o.mjd_obs or 0)))
+        errors = [
+            f"{c}: {r.error}"
+            for c, r in zip(self.collections, results, strict=True)
+            if r.status != "ok"
+        ]
+        if errors and not obs:
+            return ArchiveResult(
+                archive=self.key,
+                label=self.label,
+                status="error",
+                table=self.table,
+                error="; ".join(errors)[:500],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return ArchiveResult(
+            archive=self.key,
+            label=self.label,
+            status="ok",
+            table=self.table,
+            error="; ".join(errors)[:500] if errors else None,
+            count=len(obs),
+            truncated=any(r.truncated for r in results),
+            elapsed_s=round(time.monotonic() - t0, 2),
+            observations=obs,
+        )
+
+    def _search_collection(self, collection, ra, dec, radius_deg, instruments, maxrec):
+        self._current_collection = collection
+        try:
+            return ObsCoreArchive.search(self, ra, dec, radius_deg, instruments, maxrec)
+        finally:
+            self._current_collection = None
+
+    _current_collection: str | None = None
 
     def build_adql(self, ra, dec, radius_deg, instruments, maxrec):
-        coll = ", ".join(f"'{c}'" for c in self.collections)
+        colls = (self._current_collection,) if self._current_collection else self.collections
+        coll = ", ".join(f"'{c}'" for c in colls)
         intent = self._pick(self.columns, "intentType", "intent")
         science = f" AND {intent} = 'science'" if intent else ""
         return (
@@ -564,7 +610,9 @@ def get_searcher() -> ArchiveSearcher:
             timeout = settings.remote_timeout * 3
             adapters: dict[str, ObsCoreArchive] = {
                 EsoArchive.key: EsoArchive(timeout=timeout),
-                MastArchive.key: MastArchive(timeout=timeout, tap_url=settings.mast_tap_url),
+                MastArchive.key: MastArchive(
+                    timeout=max(timeout, 150.0), tap_url=settings.mast_tap_url
+                ),
                 AlmaArchive.key: AlmaArchive(timeout=timeout),
             }
             _searcher = ArchiveSearcher(adapters=adapters)

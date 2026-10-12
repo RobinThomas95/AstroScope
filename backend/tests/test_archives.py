@@ -167,6 +167,11 @@ class FakeMast(Canned, MastArchive):
     def discover(self):
         self._discovered = True
 
+    def run(self, adql, maxrec=500):
+        rows = super().run(adql, maxrec)
+        # MAST is queried once per collection: answer only with rows of that collection
+        return [r for r in rows if f"'{r.get('obs_collection')}'" in adql]
+
 
 class FakeAlma(Canned, AlmaArchive):
     pass
@@ -207,8 +212,9 @@ def test_adapters_map_rows_and_build_adql():
     )
     assert m.access_url.startswith("https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:")
     assert m.extra["filters"] == "F200W" and m.public is True
-    assert "obs_collection IN ('HST', 'JWST')" in s.adapters["mast"].adql[0]
-    assert "CONTAINS(POINT('ICRS', s_ra, s_dec)" in s.adapters["mast"].adql[0]
+    mast_adql = s.adapters["mast"].adql
+    assert {q.split("obs_collection IN ")[1] for q in mast_adql} == {"('HST')", "('JWST')"}
+    assert all("CONTAINS(POINT('ICRS', s_ra, s_dec)" in q for q in mast_adql)
 
     a = alma.observations[0]
     assert a.instrument == "ALMA" and a.band.startswith("Band 6 (") and "GHz" in a.band
@@ -261,6 +267,8 @@ def test_mast_discovers_endpoint_table_and_columns():
                     {"column_name": "instrument_name"},
                     {"column_name": "intentType"},
                 ]
+            if "'JWST'" not in adql:
+                return []
             return [dict(MAST_ROW, ra=53.41, dec=-36.15, collection="JWST")]
 
     a = Discovering()
@@ -271,12 +279,12 @@ def test_mast_discovers_endpoint_table_and_columns():
     assert (a.ra_column, a.dec_column, a.collection_column) == ("ra", "dec", "collection")
     adql = a.calls[-1][1]
     assert "FROM dbo.ObsPointing WHERE" in adql
-    assert "CONTAINS(POINT('ICRS', ra, dec)" in adql and "collection IN ('HST', 'JWST')" in adql
+    assert "CONTAINS(POINT('ICRS', ra, dec)" in adql and "collection IN ('" in adql
     assert "AND intentType = 'science'" in adql
-    # discovery happens once
+    # discovery happens once; then one query per collection
     n = len(a.calls)
     a.search(53.4, -36.1, 0.1)
-    assert len(a.calls) == n + 1
+    assert len(a.calls) == n + 2
 
 
 def test_mast_reports_when_no_endpoint_answers():
