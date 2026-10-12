@@ -126,6 +126,9 @@ def test_surveys_catalog_points_overlays_at_proxy(monkeypatch):
     client = _client(monkeypatch, FakeMocServer())
     body = client.get("/api/surveys").json()
     assert all(o["moc_url"].startswith("/api/overlays/") for o in body["overlays"])
+    ids = {t["id"] for t in body["target_overlays"]}
+    assert {"muse", "alma", "jwst-fp", "hst-fp"} <= ids
+    assert all("{ra}" in t["moc_url_template"] for t in body["target_overlays"])
 
 
 def test_union_failure_falls_back_to_largest_member(monkeypatch):

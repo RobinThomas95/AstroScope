@@ -105,6 +105,50 @@ OVERLAYS: list[Overlay] = [
 
 OVERLAY_BY_ID: dict[str, Overlay] = {o.id: o for o in OVERLAYS}
 
+
+class TargetOverlay(BaseModel):
+    """A footprint overlay computed around the current target from an archive's ObsCore table."""
+
+    id: str
+    label: str
+    color: str
+    description: str = ""
+    moc_url_template: str = Field(
+        description="API path with {ra}, {dec} and {radius} placeholders (degrees, arcmin)"
+    )
+
+
+TARGET_OVERLAYS: list[TargetOverlay] = [
+    TargetOverlay(
+        id="muse",
+        label="MUSE footprints (ESO archive)",
+        color="#a3e635",
+        description="Exact footprints of public MUSE cubes near the target",
+        moc_url_template="/api/archives/eso/footprints/moc?ra={ra}&dec={dec}&radius_arcmin={radius}&instrument=MUSE",
+    ),
+    TargetOverlay(
+        id="alma",
+        label="ALMA footprints (ALMA archive)",
+        color="#fb923c",
+        description="Footprints of ALMA science observations near the target",
+        moc_url_template="/api/archives/alma/footprints/moc?ra={ra}&dec={dec}&radius_arcmin={radius}",
+    ),
+    TargetOverlay(
+        id="jwst-fp",
+        label="JWST footprints (MAST)",
+        color="#e879f9",
+        description="Exact JWST observation footprints near the target",
+        moc_url_template="/api/archives/mast/footprints/moc?ra={ra}&dec={dec}&radius_arcmin={radius}&collection=JWST",
+    ),
+    TargetOverlay(
+        id="hst-fp",
+        label="HST footprints (MAST)",
+        color="#0ea5e9",
+        description="Exact HST observation footprints near the target",
+        moc_url_template="/api/archives/mast/footprints/moc?ra={ra}&dec={dec}&radius_arcmin={radius}&collection=HST",
+    ),
+]
+
 DEFAULT_GRID: list[str] = [
     "P/DSS2/color",
     "P/PanSTARRS/DR1/color-z-zg-g",

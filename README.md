@@ -10,7 +10,7 @@ Aladin Lite v3 sky views across different surveys.
 | --- | --- | --- |
 | 1 | Target resolver & basic metadata (SIMBAD TAP, NED, Sesame) | implemented |
 | 2 | Synced 2x2 Aladin Lite viewer with per-pane surveys and MOC overlays | implemented |
-| 3 | Archive cross-matching via ObsCore TAP (ESO, MAST, ALMA) + HI surveys | planned |
+| 3 | Archive cross-matching via ObsCore TAP (ESO, MAST, ALMA) + HI surveys | implemented |
 | 4 | ESO DataLink/SODA MUSE cutouts, 1D spectra, HI overplot | planned |
 | 5 | ADS literature & bibliometrics | planned |
 | 6 | LLM scientific synthesis | planned |
@@ -22,12 +22,14 @@ backend/            FastAPI application (Python 3.11+)
   app/main.py       app factory, CORS, routers
   app/config.py     settings (loaded from the repo-root .env)
   app/schemas/      Pydantic response models
-  app/services/     coords parsing, SIMBAD TAP client, NED client, resolver, survey catalog
-  app/routers/      /api/resolve, /api/surveys, /api/health
+  app/services/     coords parsing, SIMBAD TAP client, NED client, resolver, survey catalog,
+                    MOCServer client, ObsCore adapters (obscore.py), STC-S parser, footprint
+                    MOC builder, HI cross-match (hi.py)
+  app/routers/      /api/resolve, /api/surveys, /api/overlays, /api/archives, /api/hi, /api/health
   tests/            pytest suite (remote services are faked; no network needed)
 frontend/           React 18 + TypeScript + Tailwind, Vite
   src/lib/viewSync.ts      pan/zoom/FOV synchronisation between Aladin instances
-  src/components/          TargetSearch, TargetCard, AladinGrid, AladinPane
+  src/components/          TargetSearch, TargetCard, AladinGrid, AladinPane, ArchivePanel
 ```
 
 ## Quick start
@@ -87,6 +89,28 @@ ESA's per-instrument image coverage maps. It holds no downloadable coverage at a
 and ALMA cube collections, so MUSE and ALMA footprints are derived per target from the ESO and
 ALMA ObsCore services in the archive module instead.
 
+### `GET /api/archives?ra=&dec=&radius_arcmin=[&archives=eso,mast,alma]`
+
+Queries the ESO (`ivoa.ObsCore`, MUSE / UVES / X-Shooter), MAST (`dbo.CaomObservation`, HST and
+JWST) and ALMA (`ivoa.obscore`, science observations) TAP services in parallel and normalises
+the rows: instrument, observation date, integration time, spectral band, spatial resolution,
+footprint (`s_region`), data / preview / archive links, proposal and release status. Each
+archive reports its own status so one outage does not hide the others. ESO and ALMA are searched
+with `INTERSECTS` on the footprint (falling back to a centre-point search if a service rejects
+it); MAST with a centre-point search.
+
+### `GET /api/archives/{archive}/footprints/moc?ra=&dec=&radius_arcmin=[&instrument=|&collection=]`
+
+The union of the matching observations' footprints as a FITS MOC, built from the STC-S regions
+with mocpy. The viewer's "footprints around the target" overlays (MUSE, ALMA, HST, JWST) use this.
+
+### `GET /api/hi?ra=&dec=[&radius_arcmin=]`
+
+Cross-matches the position against ALFALFA α.100 (`J/ApJ/861/49`), HIPASS HICAT (`VIII/73`) and
+the Springob+ 2005 HI archive (`J/ApJS/160/149`) on VizieR, within half the survey beam
+(minimum 3 arcmin) unless a radius is given. Returns heliocentric velocity, W50, W20, integrated
+21 cm flux, S/N, distance and log M_HI where the catalogue provides them.
+
 ## Viewer synchronisation
 
 Aladin Lite v3 has no built-in view linking, so `frontend/src/lib/viewSync.ts` implements it on
@@ -108,6 +132,12 @@ is tested against faked service responses. The first live run should confirm:
 
 1. `GET /api/resolve?q=NGC%201365` returns `main_id = "NGC  1365"`, z ~ 0.0055, type `SB(s)b`,
    and `FCC 121` under environment memberships.
-2. `GET /api/overlays` reports `resolved: true` with a sensible record for each overlay, and
-   ticking an overlay in a pane draws footprints. The proxy and rendering path were verified
-   against a local stand-in MOC server; only the real CDS record IDs remain to be confirmed.
+2. `GET /api/overlays` reports `resolved: true` for each overlay and ticking one in a pane draws
+   coverage (verified live for HST, JWST, Chandra and XMM-Newton).
+3. `GET /api/archives?ra=53.4015&dec=-36.1404&radius_arcmin=5` returns MUSE, HST, JWST and ALMA
+   observations of NGC 1365 with `status: ok` for all three archives, and the MUSE footprint
+   overlay draws the PHANGS-MUSE mosaic. The adapters were built against the public column
+   names of each service and tested with canned rows; the MAST table name
+   (`dbo.CaomObservation`) and the ALMA/ESO `INTERSECTS` support are the parts to confirm live.
+4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS and Springob detections for NGC 1365
+   (ALFALFA does not cover Dec −36).

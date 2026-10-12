@@ -3,7 +3,7 @@ import type { AladinCatalog, AladinInstance, AladinMOC, AladinStatic } from "ala
 import { loadAladin } from "../lib/aladin";
 import { apiUrl } from "../lib/api";
 import type { ViewSync } from "../lib/viewSync";
-import type { Overlay, Survey } from "../types";
+import type { ResolvedOverlay, Survey } from "../types";
 
 export interface TargetMarker {
   ra: number;
@@ -15,7 +15,7 @@ interface Props {
   id: string;
   sync: ViewSync;
   surveys: Survey[];
-  overlays: Overlay[];
+  overlays: ResolvedOverlay[];
   surveyId: string;
   enabledOverlays: string[];
   marker: TargetMarker | null;
@@ -57,12 +57,14 @@ export default function AladinPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const aladinRef = useRef<AladinInstance | null>(null);
   const staticRef = useRef<AladinStatic | null>(null);
-  const mocsRef = useRef<Map<string, AladinMOC>>(new Map());
+  const mocsRef = useRef<Map<string, { moc: AladinMOC; url: string }>>(new Map());
   const markerCatRef = useRef<AladinCatalog | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showOverlays, setShowOverlays] = useState(false);
-  const [overlayStatus, setOverlayStatus] = useState<Record<string, "loading" | "ok" | "error">>({});
+  const [overlayStatus, setOverlayStatus] = useState<
+    Record<string, "loading" | "ok" | "error" | "needs-target">
+  >({});
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close the overlay menu when clicking anywhere else.
@@ -123,32 +125,39 @@ export default function AladinPane({
     }
   }, [ready, surveyId, id]);
 
-  // Coverage overlays (MOCs): add newly enabled ones, remove disabled ones.
+  // Coverage overlays (MOCs): add newly enabled ones, remove disabled ones, and reload any
+  // whose URL changed (target-bound footprints follow the resolved target).
   useEffect(() => {
     const aladin = aladinRef.current;
     const A = staticRef.current;
     if (!ready || !aladin || !A) return;
-    const wanted = new Set(enabledOverlays);
-    for (const [key, moc] of mocsRef.current) {
-      if (!wanted.has(key)) {
-        try {
-          aladin.remove(moc);
-        } catch (err) {
-          console.warn(`Pane ${id}: could not remove overlay ${key}`, err);
-        }
-        mocsRef.current.delete(key);
-        setOverlayStatus((s) => {
-          const next = { ...s };
-          delete next[key];
-          return next;
-        });
-      }
-    }
-    for (const key of wanted) {
-      if (mocsRef.current.has(key)) continue;
+    const wanted = new Map<string, ResolvedOverlay>();
+    for (const key of enabledOverlays) {
       const def = overlays.find((o) => o.id === key);
-      if (!def) continue;
-      const url = apiUrl(def.moc_url);
+      if (def) wanted.set(key, def);
+    }
+    for (const [key, entry] of mocsRef.current) {
+      const def = wanted.get(key);
+      if (def && def.url === entry.url) continue;
+      try {
+        aladin.remove(entry.moc);
+      } catch (err) {
+        console.warn(`Pane ${id}: could not remove overlay ${key}`, err);
+      }
+      mocsRef.current.delete(key);
+      setOverlayStatus((s) => {
+        const next = { ...s };
+        delete next[key];
+        return next;
+      });
+    }
+    for (const [key, def] of wanted) {
+      if (mocsRef.current.has(key)) continue;
+      if (!def.url) {
+        setOverlayStatus((s) => ({ ...s, [key]: "needs-target" }));
+        continue;
+      }
+      const url = apiUrl(def.url);
       setOverlayStatus((s) => ({ ...s, [key]: "loading" }));
       try {
         const moc = A.MOCFromURL(
@@ -161,7 +170,7 @@ export default function AladinPane({
           },
         );
         aladin.addMOC(moc);
-        mocsRef.current.set(key, moc);
+        mocsRef.current.set(key, { moc, url: def.url });
       } catch (err) {
         console.error(`Pane ${id}: could not load overlay ${key} from ${url}`, err);
         setOverlayStatus((s) => ({ ...s, [key]: "error" }));
@@ -232,28 +241,40 @@ export default function AladinPane({
           </button>
           {showOverlays && (
             <div className="absolute right-0 z-20 mt-1 w-60 rounded border border-slate-700 bg-slate-900 p-2 shadow-xl">
-              {overlays.map((o) => (
-                <label key={o.id} className="flex cursor-pointer items-center gap-2 py-0.5">
-                  <input
-                    type="checkbox"
-                    checked={enabledOverlays.includes(o.id)}
-                    onChange={() => onOverlayToggle(o.id)}
-                  />
-                  <span className="inline-block h-2 w-2 rounded-sm" style={{ background: o.color }} />
-                  <span className="text-slate-200">{o.label}</span>
-                  {overlayStatus[o.id] === "loading" && (
-                    <span className="ml-auto text-[10px] text-slate-500">loading…</span>
-                  )}
-                  {overlayStatus[o.id] === "error" && (
-                    <span className="ml-auto text-[10px] text-rose-400" title={`${apiUrl(o.moc_url)} failed`}>
-                      failed
-                    </span>
-                  )}
-                </label>
+              {[false, true].map((targetBound) => (
+                <div key={String(targetBound)}>
+                  <p className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
+                    {targetBound ? "Footprints around the target" : "Mission coverage"}
+                  </p>
+                  {overlays
+                    .filter((o) => o.targetBound === targetBound)
+                    .map((o) => (
+                      <label key={o.id} className="flex cursor-pointer items-center gap-2 py-0.5" title={o.description}>
+                        <input
+                          type="checkbox"
+                          checked={enabledOverlays.includes(o.id)}
+                          onChange={() => onOverlayToggle(o.id)}
+                        />
+                        <span className="inline-block h-2 w-2 rounded-sm" style={{ background: o.color }} />
+                        <span className="text-slate-200">{o.label}</span>
+                        {overlayStatus[o.id] === "loading" && (
+                          <span className="ml-auto text-[10px] text-slate-500">loading…</span>
+                        )}
+                        {overlayStatus[o.id] === "needs-target" && (
+                          <span className="ml-auto text-[10px] text-amber-400">needs a target</span>
+                        )}
+                        {overlayStatus[o.id] === "error" && (
+                          <span className="ml-auto text-[10px] text-rose-400" title={`${o.url ? apiUrl(o.url) : ""} failed`}>
+                            none / failed
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                </div>
               ))}
               <p className="mt-1 text-[10px] text-slate-500">
-                Coverage from the CDS MOC server via the AstroScope API. See /api/overlays for the
-                resolved records.
+                Mission coverage comes from the CDS MOC server; footprints are computed from the
+                archives' ObsCore tables around the target.
               </p>
             </div>
           )}

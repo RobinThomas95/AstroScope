@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AladinGrid from "./components/AladinGrid";
+import ArchivePanel from "./components/ArchivePanel";
 import TargetCard from "./components/TargetCard";
 import TargetSearch from "./components/TargetSearch";
 import { ApiError, fetchSurveyCatalog, resolveTarget } from "./lib/api";
@@ -11,6 +12,7 @@ export default function App() {
   const [target, setTarget] = useState<ResolvedTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [radiusArcmin, setRadiusArcmin] = useState(5);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -75,9 +77,24 @@ export default function App() {
             </div>
           )}
         </aside>
-        <section className="min-h-0 min-w-0 flex-1">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
           {catalog ? (
-            <AladinGrid catalog={catalog} target={target} />
+            <>
+              <div className="min-h-0 flex-[3]">
+                <AladinGrid
+                  catalog={catalog}
+                  target={target}
+                  footprintRadiusArcmin={Math.max(radiusArcmin, 2)}
+                />
+              </div>
+              <div className="min-h-0 flex-[2]">
+                <ArchivePanel
+                  target={target}
+                  radiusArcmin={radiusArcmin}
+                  onRadiusChange={setRadiusArcmin}
+                />
+              </div>
+            </>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-500">
               {catalogError ? `Could not load survey catalog: ${catalogError}` : "Loading survey catalog…"}

@@ -7,7 +7,16 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.services.mocserver import get_mocserver
-from app.services.surveys import DEFAULT_GRID, OVERLAY_BY_ID, OVERLAYS, SURVEYS, Overlay, Survey
+from app.services.surveys import (
+    DEFAULT_GRID,
+    OVERLAY_BY_ID,
+    OVERLAYS,
+    SURVEYS,
+    TARGET_OVERLAYS,
+    Overlay,
+    Survey,
+    TargetOverlay,
+)
 
 router = APIRouter(prefix="/api", tags=["surveys"])
 
@@ -23,6 +32,7 @@ class OverlayOut(BaseModel):
 class SurveyCatalog(BaseModel):
     surveys: list[Survey]
     overlays: list[OverlayOut]
+    target_overlays: list[TargetOverlay]
     default_grid: list[str]
 
 
@@ -51,7 +61,10 @@ def _overlay_out(o: Overlay) -> OverlayOut:
 @router.get("/surveys", response_model=SurveyCatalog)
 async def list_surveys() -> SurveyCatalog:
     return SurveyCatalog(
-        surveys=SURVEYS, overlays=[_overlay_out(o) for o in OVERLAYS], default_grid=DEFAULT_GRID
+        surveys=SURVEYS,
+        overlays=[_overlay_out(o) for o in OVERLAYS],
+        target_overlays=TARGET_OVERLAYS,
+        default_grid=DEFAULT_GRID,
     )
 
 

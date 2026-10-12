@@ -88,8 +88,116 @@ export interface Overlay {
   moc_url: string;
 }
 
+export interface TargetOverlay {
+  id: string;
+  label: string;
+  color: string;
+  description: string;
+  /** API path with {ra}, {dec}, {radius} placeholders. */
+  moc_url_template: string;
+}
+
 export interface SurveyCatalog {
   surveys: Survey[];
   overlays: Overlay[];
+  target_overlays: TargetOverlay[];
   default_grid: string[];
+}
+
+/** An overlay ready to load in a pane; url is null when it needs a target that is not set. */
+export interface ResolvedOverlay {
+  id: string;
+  label: string;
+  color: string;
+  description: string;
+  url: string | null;
+  targetBound: boolean;
+}
+
+// ---- Module 3: archives ----
+
+export interface ArchiveObservation {
+  archive: string;
+  collection: string | null;
+  instrument: string | null;
+  obs_id: string | null;
+  dataproduct_type: string | null;
+  calib_level: number | null;
+  target_name: string | null;
+  date_obs: string | null;
+  mjd_obs: number | null;
+  exptime_s: number | null;
+  band: string | null;
+  em_min_m: number | null;
+  em_max_m: number | null;
+  resolution_arcsec: number | null;
+  fov_deg: number | null;
+  ra_deg: number | null;
+  dec_deg: number | null;
+  separation_arcmin: number | null;
+  s_region: string | null;
+  access_url: string | null;
+  preview_url: string | null;
+  archive_url: string | null;
+  proposal_id: string | null;
+  release_date: string | null;
+  public: boolean | null;
+  extra: Record<string, string | number | null>;
+}
+
+export interface ArchiveResult {
+  archive: string;
+  label: string;
+  status: "ok" | "error" | "skipped";
+  error: string | null;
+  table: string | null;
+  count: number;
+  truncated: boolean;
+  elapsed_s: number | null;
+  observations: ArchiveObservation[];
+}
+
+export interface ArchiveSearch {
+  ra_deg: number;
+  dec_deg: number;
+  radius_arcmin: number;
+  results: ArchiveResult[];
+  instrument_counts: Record<string, number>;
+}
+
+export interface HIDetection {
+  survey: string;
+  catalog: string;
+  source_id: string | null;
+  name: string | null;
+  ra_deg: number | null;
+  dec_deg: number | null;
+  separation_arcmin: number | null;
+  velocity_kms: number | null;
+  velocity_err_kms: number | null;
+  w50_kms: number | null;
+  w50_err_kms: number | null;
+  w20_kms: number | null;
+  flux_jy_kms: number | null;
+  flux_err_jy_kms: number | null;
+  snr: number | null;
+  rms_mjy: number | null;
+  distance_mpc: number | null;
+  log_mhi: number | null;
+  vizier_url: string | null;
+}
+
+export interface HISurveyResult {
+  survey: string;
+  catalog: string;
+  status: "ok" | "error";
+  error: string | null;
+  detections: HIDetection[];
+}
+
+export interface HISearch {
+  ra_deg: number;
+  dec_deg: number;
+  radius_arcmin: number;
+  results: HISurveyResult[];
 }

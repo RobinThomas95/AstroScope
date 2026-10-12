@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ViewSync, type ViewState } from "../lib/viewSync";
-import type { ResolvedTarget, SurveyCatalog } from "../types";
+import { fillOverlayTemplate } from "../lib/api";
+import type { ResolvedOverlay, ResolvedTarget, SurveyCatalog } from "../types";
 import AladinPane, { type TargetMarker } from "./AladinPane";
 
 interface PaneConfig {
@@ -12,6 +13,8 @@ interface PaneConfig {
 interface Props {
   catalog: SurveyCatalog;
   target: ResolvedTarget | null;
+  /** Radius used for target-bound footprint overlays (arcmin). */
+  footprintRadiusArcmin: number;
 }
 
 const PANE_IDS = ["nw", "ne", "sw", "se"];
@@ -39,7 +42,7 @@ function formatRaDec(ra: number, dec: number): string {
     .padStart(2, "0")}`;
 }
 
-export default function AladinGrid({ catalog, target }: Props) {
+export default function AladinGrid({ catalog, target, footprintRadiusArcmin }: Props) {
   const syncRef = useRef<ViewSync | null>(null);
   if (!syncRef.current) {
     syncRef.current = new ViewSync({ ra: 53.4015, dec: -36.1404, fov: 0.5 });
@@ -88,6 +91,33 @@ export default function AladinGrid({ catalog, target }: Props) {
         : null,
     [target],
   );
+
+  const overlays = useMemo<ResolvedOverlay[]>(() => {
+    const fixed: ResolvedOverlay[] = catalog.overlays.map((o) => ({
+      id: o.id,
+      label: o.label,
+      color: o.color,
+      description: o.description,
+      url: o.moc_url,
+      targetBound: false,
+    }));
+    const bound: ResolvedOverlay[] = catalog.target_overlays.map((o) => ({
+      id: o.id,
+      label: o.label,
+      color: o.color,
+      description: o.description,
+      url: target
+        ? fillOverlayTemplate(
+            o.moc_url_template,
+            target.coordinates.ra_deg,
+            target.coordinates.dec_deg,
+            footprintRadiusArcmin,
+          )
+        : null,
+      targetBound: true,
+    }));
+    return [...fixed, ...bound];
+  }, [catalog, target, footprintRadiusArcmin]);
 
   const updatePane = (id: string, patch: Partial<PaneConfig>) =>
     setPanes((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -168,7 +198,7 @@ export default function AladinGrid({ catalog, target }: Props) {
             id={p.id}
             sync={sync}
             surveys={catalog.surveys}
-            overlays={catalog.overlays}
+            overlays={overlays}
             surveyId={p.surveyId}
             enabledOverlays={p.overlays}
             marker={marker}

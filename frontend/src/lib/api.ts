@@ -1,4 +1,4 @@
-import type { ResolvedTarget, SurveyCatalog } from "../types";
+import type { ArchiveSearch, HISearch, ResolvedTarget, SurveyCatalog } from "../types";
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
 
@@ -38,4 +38,37 @@ export function resolveTarget(query: string, opts?: { refresh?: boolean; signal?
 
 export function fetchSurveyCatalog(signal?: AbortSignal) {
   return getJson<SurveyCatalog>("/api/surveys", signal);
+}
+
+export function searchArchives(
+  ra: number,
+  dec: number,
+  radiusArcmin: number,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    ra: ra.toFixed(6),
+    dec: dec.toFixed(6),
+    radius_arcmin: String(radiusArcmin),
+  });
+  return getJson<ArchiveSearch>(`/api/archives?${params.toString()}`, signal);
+}
+
+export function searchHI(ra: number, dec: number, radiusArcmin?: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ ra: ra.toFixed(6), dec: dec.toFixed(6) });
+  if (radiusArcmin) params.set("radius_arcmin", String(radiusArcmin));
+  return getJson<HISearch>(`/api/hi?${params.toString()}`, signal);
+}
+
+/** Fill a target-overlay template with the current position. */
+export function fillOverlayTemplate(
+  template: string,
+  ra: number,
+  dec: number,
+  radiusArcmin: number,
+): string {
+  return template
+    .replace("{ra}", ra.toFixed(6))
+    .replace("{dec}", dec.toFixed(6))
+    .replace("{radius}", String(radiusArcmin));
 }
