@@ -402,7 +402,18 @@ class MastArchive(ObsCoreArchive):
             f"{self.instrument_predicate(instruments)}"
         )
 
+    MAST_DOWNLOAD = "https://mast.stsci.edu/api/v0.1/Download/file?uri="
+
+    @classmethod
+    def mast_url(cls, value: str | None) -> str | None:
+        """MAST lists products as 'mast:JWST/product/...' URIs; the download API serves them."""
+        if value and value.startswith("mast:"):
+            return cls.MAST_DOWNLOAD + quote(value, safe=":/")
+        return value
+
     def decorate(self, obs, r):
+        obs.access_url = self.mast_url(obs.access_url)
+        obs.preview_url = self.mast_url(obs.preview_url)
         obs.extra["filters"] = _str(first(r, "filters"))
         obs.extra["obs_title"] = _str(first(r, "obs_title"))
         obs.extra["proposal_pi"] = _str(first(r, "proposal_pi"))

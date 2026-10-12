@@ -100,8 +100,8 @@ MAST_ROW = {
     "s_ra": 53.41,
     "s_dec": -36.15,
     "s_region": "POLYGON ICRS 53.3 -36.2 53.5 -36.2 53.5 -36.1 53.3 -36.1",
-    "dataURL": "https://mast.stsci.edu/api/x",
-    "jpegURL": "https://mast.stsci.edu/x.jpg",
+    "dataURL": "mast:JWST/product/jw02107-o038_i2d.fits",
+    "jpegURL": "mast:JWST/product/jw02107-o038_i2d.jpg",
     "proposal_id": "2107",
     "t_obs_release": "2023-01-01T00:00:00",
     "filters": "F200W",
@@ -188,7 +188,11 @@ def test_adapters_map_rows_and_build_adql():
     assert "UPPER" not in adql
 
     m = mast.observations[0]
-    assert m.collection == "JWST" and m.preview_url.endswith(".jpg")
+    assert m.collection == "JWST"
+    assert m.preview_url == (
+        "https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:JWST/product/jw02107-o038_i2d.jpg"
+    )
+    assert m.access_url.startswith("https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:")
     assert m.extra["filters"] == "F200W" and m.public is True
     assert "obs_collection IN ('HST', 'JWST')" in s.adapters["mast"].adql[0]
     assert "CONTAINS(POINT('ICRS', s_ra, s_dec)" in s.adapters["mast"].adql[0]
@@ -367,10 +371,10 @@ def test_hi_cross_match_maps_catalog_columns():
     assert hip.flux_jy_kms == 174.7 and hip.rms_mjy == 0.0158
     assert hip.ra_deg == pytest.approx(53.389, abs=1e-3)
     assert hip.dec_deg == pytest.approx(-36.1408, abs=1e-3)
-    spr = by["J/ApJS/160/149"]
+    spr = by["J/AJ/128/16"]
     assert spr.status == "error" and "vizier slow" in spr.error
     assert res.radius_arcmin == pytest.approx(7.75)  # half the HIPASS beam
-    assert {s.key for s in HI_SURVEYS} == {"alfalfa", "hipass", "nhicat", "springob"}
+    assert {s.key for s in HI_SURVEYS} == {"alfalfa", "hipass", "nhicat", "hipass_bgc"}
     assert next(s.catalog for s in HI_SURVEYS if s.key == "nhicat") == "VIII/89"
 
 

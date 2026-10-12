@@ -106,9 +106,10 @@ with mocpy. The viewer's "footprints around the target" overlays (MUSE, ALMA, HS
 
 ### `GET /api/hi?ra=&dec=[&radius_arcmin=]`
 
-Cross-matches the position against ALFALFA α.100 (`J/ApJ/861/49`), HIPASS HICAT (`VIII/73`) and
-the Springob+ 2005 HI archive (`J/ApJS/160/149`) on VizieR, within half the survey beam
-(minimum 3 arcmin) unless a radius is given. Returns heliocentric velocity, W50, W20, integrated
+Cross-matches the position against ALFALFA α.100 (`J/ApJ/861/49`), HIPASS HICAT (`VIII/73`),
+the northern HIPASS catalogue NHICAT (`VIII/89`) and the HIPASS Bright Galaxy Catalog
+(`J/AJ/128/16`) on VizieR, within half the survey beam (minimum 3 arcmin) unless a radius is
+given. (The Springob+ 2005 digital HI archive is not hosted on VizieR.) Returns heliocentric velocity, W50, W20, integrated
 21 cm flux, S/N, distance and log M_HI where the catalogue provides them.
 
 ## Viewer synchronisation
@@ -139,5 +140,5 @@ is tested against faked service responses. The first live run should confirm:
    overlay draws the PHANGS-MUSE mosaic. The adapters were built against the public column
    names of each service and tested with canned rows; the MAST table name
    (`dbo.CaomObservation`) and the ALMA/ESO `INTERSECTS` support are the parts to confirm live.
-4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS and Springob detections for NGC 1365
-   (ALFALFA does not cover Dec −36).
+4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS detections for NGC 1365 (ALFALFA does
+   not cover Dec −36).

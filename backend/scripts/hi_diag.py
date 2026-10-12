@@ -24,9 +24,10 @@ def find(keywords: list[str]) -> None:
         except Exception as exc:  # noqa: BLE001
             print("  FAILED", type(exc).__name__, exc)
             continue
-        if not cats:
+        found = {k: v for k, v in (cats or {}).items() if k}
+        if not found:
             print("  (no matches)")
-        for name, meta in cats.items():
+        for name, meta in found.items():
             print(f"  {name}: {getattr(meta, 'description', meta)}")
 
 
@@ -53,7 +54,7 @@ def main(argv: list[str]) -> None:
         find(argv[1:] or ["Springob HI", "HIPASS", "ALFALFA"])
         return
     if argv and argv[0] == "--catalog":
-        describe(argv[1:] or ["J/ApJS/160/149", "VIII/89"])
+        describe(argv[1:] or ["J/AJ/128/16", "VIII/89"])
         return
     ra = float(argv[0]) if argv else 53.4015
     dec = float(argv[1]) if len(argv) > 1 else -36.1404

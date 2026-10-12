@@ -1,4 +1,7 @@
-"""HI 21 cm cross-match against VizieR catalogues (ALFALFA, HIPASS, Springob+ 2005 archive)."""
+"""HI 21 cm cross-match against VizieR catalogues (ALFALFA, HIPASS south and north, HIPASS BGC).
+
+The Springob+ 2005 digital HI archive is not hosted on VizieR, so it is not included.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ HI_SURVEYS: tuple[HISurvey, ...] = (
     HISurvey("alfalfa", "ALFALFA α.100 (Haynes+ 2018)", "J/ApJ/861/49", 3.5),
     HISurvey("hipass", "HIPASS HICAT (Meyer+ 2004)", "VIII/73", 15.5),
     HISurvey("nhicat", "Northern HIPASS NHICAT (Wong+ 2006)", "VIII/89", 15.5),
-    HISurvey("springob", "HI archive (Springob+ 2005)", "J/ApJS/160/149", 3.5),
+    HISurvey("hipass_bgc", "HIPASS Bright Galaxy Catalog (Koribalski+ 2004)", "J/AJ/128/16", 15.5),
 )
 
 # Column aliases across catalogues (matched case-insensitively).
@@ -37,7 +40,21 @@ _RA = ("RAJ2000", "_RAJ2000", "RAdeg", "RA_ICRS", "RA")
 _DEC = ("DEJ2000", "_DEJ2000", "DEdeg", "DE_ICRS", "DEC", "DE")
 # HIPASS HICAT (VIII/73) reports the systemic velocity as RV50max (midpoint of the W50max
 # measurement) and the widths as W50max / W20max; RVsp is the velocity of the spectral peak.
-_VEL = ("Vhel", "Vhelio", "V21", "RV", "RV50max", "RVmom", "cz", "Vh", "HV", "Vopt", "Vsys", "V")
+_VEL = (
+    "Vhel",
+    "Vhelio",
+    "VHI",
+    "V21",
+    "RV",
+    "RV50max",
+    "RVmom",
+    "cz",
+    "Vh",
+    "HV",
+    "Vopt",
+    "Vsys",
+    "V",
+)
 _VEL_ERR = ("e_Vhel", "e_Vhelio", "e_V21", "e_RV", "e_cz", "e_V")
 _W50 = ("W50", "W50max", "W50c", "Wc50", "W50h", "W50m")
 _W50_ERR = ("e_W50", "e_W50c")
