@@ -49,6 +49,16 @@ class Settings(BaseSettings):
         alias="ASTROSCOPE_CUBE_MAX_MB",
         description="Largest cube product the server will download for spectrum extraction",
     )
+    cube_cache_dir: str | None = Field(
+        default=None,
+        alias="ASTROSCOPE_CUBE_CACHE_DIR",
+        description="Where downloaded cube products are kept (default: <temp>/astroscope-cubes)",
+    )
+    cube_cache_gb: float = Field(
+        default=4.0,
+        alias="ASTROSCOPE_CUBE_CACHE_GB",
+        description="Oldest cube products are deleted once the cache exceeds this size",
+    )
     mocserver_url: str = Field(
         default="https://alasky.cds.unistra.fr/MocServer/query", alias="ASTROSCOPE_MOCSERVER_URL"
     )

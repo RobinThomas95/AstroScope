@@ -232,9 +232,11 @@ def client(monkeypatch, tmp_path):
     data, _, _ = make_alma_cube()
 
     class FakeStore(CubeStore):
-        def fetch(self, url, max_mb=None):
+        def fetch(self, url, max_mb=None, progress=None):
             p = Path(tmp_path) / "x-cube.fits"
             p.write_bytes(data)
+            if progress:
+                progress(len(data), len(data))
             return p
 
     svc = CubeSpectrumService(store=FakeStore(cache_dir=tmp_path))
@@ -313,3 +315,51 @@ def test_cube_spectrum_endpoint_and_radio_lines(client):
     ).json()
     assert [line["name"] for line in lines] == ["CO(2-1)"]
     assert lines[0]["observed_frequency_ghz"] == pytest.approx(230.538 / 1.005457)
+
+
+def test_cube_job_reports_progress_and_result(client):
+    import time
+
+    res = client.post(
+        "/api/spectrum/cube/jobs",
+        params={
+            "product_url": "https://almascience.org/dataPortal/a.spw25.cube.I.pbcor.fits",
+            "ra": RA0,
+            "dec": DEC0,
+            "radius_arcsec": 0.6,
+        },
+    )
+    assert res.status_code == 200
+    job_id = res.json()["job_id"]
+    for _ in range(100):
+        body = client.get(f"/api/spectrum/cube/jobs/{job_id}").json()
+        if body["state"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert body["state"] == "done", body
+    assert body["downloaded_mb"] == body["total_mb"] and body["spectrum"]["n_channels"] == 100
+    assert client.get("/api/spectrum/cube/jobs/nope").status_code == 404
+
+
+def test_cube_cache_status_and_clear(client, tmp_path):
+    (tmp_path / "abcd-x.fits").write_bytes(b"x" * 1000)
+    body = client.get("/api/cubes/cache").json()
+    assert body["files"] >= 1 and body["bytes_mb"] >= 0 and body["dir"] == str(tmp_path)
+    cleared = client.delete("/api/cubes/cache").json()
+    assert cleared["files"] == 0
+
+
+def test_store_keeps_only_the_unpacked_copy(tmp_path, monkeypatch):
+    import gzip
+
+    data, k, _ = make_alma_cube()
+    store = CubeStore(cache_dir=tmp_path, limit_bytes=10**9)
+    url = "https://almascience.org/dataPortal/x_sci.spw1_230960MHz.cube.I.pbcor.fits.gz"
+    gz = store.path_for(url)
+    gz.write_bytes(gzip.compress(data))
+    spec = cubes.extract_from_file(store.fetch(url), RA0, DEC0, 0.6)
+    assert spec.flux[k] == pytest.approx(1.0)
+    assert not gz.exists() and store.cached(url) == cubes._plain_path(gz)
+    seen = []
+    assert store.fetch(url, progress=lambda d, t: seen.append((d, t))) == cubes._plain_path(gz)
+    assert seen and seen[-1][0] == seen[-1][1] > 0

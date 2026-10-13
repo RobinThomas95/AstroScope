@@ -65,3 +65,19 @@ class CubeProductOut(BaseModel):
     contains_line: bool | None = Field(
         default=None, description="Whether the requested line falls in this window"
     )
+
+
+class CubeJobStatus(BaseModel):
+    job_id: str
+    state: str = Field(description="queued | downloading | extracting | done | error")
+    downloaded_mb: float = 0.0
+    total_mb: float | None = None
+    message: str | None = None
+    spectrum: Spectrum1D | None = None
+
+
+class CubeCacheStatus(BaseModel):
+    dir: str
+    files: int
+    bytes_mb: float
+    limit_mb: float

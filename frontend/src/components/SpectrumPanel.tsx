@@ -9,8 +9,11 @@ import type {
 } from "plotly.js";
 import {
   ApiError,
+  clearCubeCache,
+  fetchCubeCache,
+  fetchCubeJob,
   fetchCubeProducts,
-  fetchCubeSpectrum,
+  startCubeSpectrumJob,
   fetchHIProfile,
   fetchLines,
   fetchMuseSpectrum,
@@ -19,6 +22,7 @@ import {
 import { observationLabel, toSpectrumRequest } from "../lib/spectrumRequest";
 import type {
   ArchiveObservation,
+  CubeCacheStatus,
   CubeProduct,
   HIDetection,
   HIProfile,
@@ -241,6 +245,86 @@ function ProductRows({
   );
 }
 
+/** One entry of the "plotted" lists: a cube trace or an HI profile. */
+export interface PlottedItem {
+  id: string;
+  label: string;
+  color: string;
+  visible: boolean;
+  kind: "optical" | "radio" | "hi";
+}
+
+function PlottedList({
+  items,
+  onToggle,
+  onRemove,
+  compact,
+}: {
+  items: PlottedItem[];
+  onToggle: (id: string, visible: boolean) => void;
+  onRemove: (id: string) => void;
+  compact?: boolean;
+}) {
+  if (!items.length) return null;
+  const row = (t: PlottedItem) => (
+    <>
+      <input
+        type="checkbox"
+        checked={t.visible}
+        onChange={(e) => onToggle(t.id, e.target.checked)}
+        aria-label={`Show ${t.label}`}
+      />
+      <span
+        className="inline-block h-2 w-2 shrink-0 rounded-sm"
+        style={{ background: t.color }}
+      />
+      <span
+        className={`min-w-0 truncate ${t.visible ? "text-slate-200" : "text-slate-500 line-through"} ${compact ? "max-w-[18rem]" : "flex-1"}`}
+        title={t.label}
+      >
+        {t.label}
+      </span>
+      <button
+        type="button"
+        onClick={() => onRemove(t.id)}
+        className="text-slate-500 hover:text-rose-300"
+        aria-label={`Remove ${t.label}`}
+      >
+        ✕
+      </button>
+    </>
+  );
+  if (compact)
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2"
+        data-testid="plotted-row"
+      >
+        <span className="text-slate-500">plotted:</span>
+        {items.map((t) => (
+          <span
+            key={t.id}
+            className="flex items-center gap-1 rounded border border-slate-700 px-1.5 py-0.5"
+          >
+            {row(t)}
+          </span>
+        ))}
+      </div>
+    );
+  return (
+    <ul className="space-y-0.5">
+      {items.map((t) => (
+        <li
+          key={t.id}
+          className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-slate-800/40"
+        >
+          {row(t)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 type Group = "alma" | "muse" | "hi";
 
 interface SourceColumnProps {
@@ -251,9 +335,11 @@ interface SourceColumnProps {
   onSearch: () => void;
   current: SpectrumRequest | null;
   onSelect: (req: SpectrumRequest) => void;
-  traces: Trace[];
+  plotted: PlottedItem[];
   onToggleTrace: (id: string, visible: boolean) => void;
   onRemoveTrace: (id: string) => void;
+  cache: CubeCacheStatus | null;
+  onClearCache: () => void;
   hiSource: string | null;
   onHITemplate: (d: HIDetection) => void;
   onUpload: (file: File | undefined) => void;
@@ -336,44 +422,16 @@ function SourceColumn(p: SourceColumnProps) {
   );
   return (
     <div className="flex w-72 shrink-0 flex-col text-xs">
-      {p.traces.length > 0 && (
+      {p.plotted.length > 0 && (
         <>
           <p className="mt-2 flex items-center gap-1 px-1 text-[11px] uppercase tracking-wide text-slate-500">
-            Plotted <span className="text-slate-600">{p.traces.length}</span>
+            Plotted <span className="text-slate-600">{p.plotted.length}</span>
           </p>
-          <ul className="space-y-0.5">
-            {p.traces.map((t) => (
-              <li
-                key={t.id}
-                className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-slate-800/40"
-              >
-                <input
-                  type="checkbox"
-                  checked={t.visible}
-                  onChange={(e) => p.onToggleTrace(t.id, e.target.checked)}
-                  aria-label={`Show ${t.label}`}
-                />
-                <span
-                  className="inline-block h-2 w-2 shrink-0 rounded-sm"
-                  style={{ background: t.color }}
-                />
-                <span
-                  className="min-w-0 flex-1 truncate text-slate-200"
-                  title={t.label}
-                >
-                  {t.label}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => p.onRemoveTrace(t.id)}
-                  className="text-slate-500 hover:text-rose-300"
-                  aria-label={`Remove ${t.label}`}
-                >
-                  ✕
-                </button>
-              </li>
-            ))}
-          </ul>
+          <PlottedList
+            items={p.plotted}
+            onToggle={p.onToggleTrace}
+            onRemove={p.onRemoveTrace}
+          />
         </>
       )}
       {!p.searched ? (
@@ -569,6 +627,30 @@ function SourceColumn(p: SourceColumnProps) {
         HST and JWST products stay in the observation list: MAST offers no
         cutout service for them.
       </p>
+      {p.cache && (
+        <p
+          className="mt-1 px-1 text-[10px] text-slate-500"
+          title={`Downloaded ALMA cubes are kept in ${p.cache.dir} so a second extraction is instant; the oldest are deleted beyond ${(p.cache.limit_mb / 1000).toFixed(1)} GB. MUSE cutouts are never written to disk.`}
+        >
+          cube cache: {p.cache.files} file{p.cache.files === 1 ? "" : "s"},{" "}
+          {p.cache.bytes_mb >= 1000
+            ? `${(p.cache.bytes_mb / 1000).toFixed(2)} GB`
+            : `${p.cache.bytes_mb.toFixed(0)} MB`}{" "}
+          of {(p.cache.limit_mb / 1000).toFixed(1)} GB
+          {p.cache.files > 0 && (
+            <>
+              {" · "}
+              <button
+                type="button"
+                onClick={p.onClearCache}
+                className="text-sky-300 underline hover:text-sky-200"
+              >
+                clear
+              </button>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }
@@ -605,7 +687,16 @@ export default function SpectrumPanel({
   const [relative, setRelative] = useState(true);
   const [normalised, setNormalised] = useState(false);
   const [window, setWindow] = useState(1500);
-  const [showHI, setShowHI] = useState(false);
+  const [hiTemplateOn, setHITemplateOn] = useState(false);
+  const [uploadOn, setUploadOn] = useState(false);
+  const [progress, setProgress] = useState<{
+    state: string;
+    downloadedMb: number;
+    totalMb: number | null;
+    started: number;
+  } | null>(null);
+  const [, setTick] = useState(0);
+  const [cache, setCache] = useState<CubeCacheStatus | null>(null);
   const [hiProfile, setHIProfile] = useState<HIProfile | null>(null);
   const [hiError, setHIError] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<UploadedHI | null>(null);
@@ -712,7 +803,15 @@ export default function SpectrumPanel({
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
-      setLoading(`Requesting a SODA cutout of ${req.label}…`);
+      setLoading(
+        `Requesting a SODA cutout of ${req.label}… ESO builds the cutout server-side, usually within a minute`,
+      );
+      setProgress({
+        state: "soda",
+        downloadedMb: 0,
+        totalMb: null,
+        started: Date.now(),
+      });
       setError(null);
       try {
         const spectrum = await fetchMuseSpectrum(
@@ -739,7 +838,10 @@ export default function SpectrumPanel({
         if (!ac.signal.aborted)
           setError(e instanceof ApiError ? e.message : String(e));
       } finally {
-        if (!ac.signal.aborted) setLoading(null);
+        if (!ac.signal.aborted) {
+          setLoading(null);
+          setProgress(null);
+        }
       }
     },
     [extractPosition, radius, method, addTrace],
@@ -807,24 +909,47 @@ export default function SpectrumPanel({
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
-      setLoading(
-        `Downloading ${product.name} (${product.size_mb ?? "?"} MB) and extracting… this can take a few minutes`,
-      );
+      setLoading(`Downloading ${product.name}…`);
+      setProgress({
+        state: "queued",
+        downloadedMb: 0,
+        totalMb: product.size_mb,
+        started: Date.now(),
+      });
       setError(null);
       try {
-        const spectrum = await fetchCubeSpectrum(
-          {
-            productUrl: product.url,
-            ra: at.ra,
-            dec: at.dec,
-            radiusArcsec: radius,
-            method,
-            maxMb: product.size_mb
-              ? Math.ceil(product.size_mb * 1.2)
-              : undefined,
-          },
-          ac.signal,
-        );
+        const opts = {
+          productUrl: product.url,
+          ra: at.ra,
+          dec: at.dec,
+          radiusArcsec: radius,
+          method,
+          maxMb: product.size_mb ? Math.ceil(product.size_mb * 1.2) : undefined,
+        };
+        let job = await startCubeSpectrumJob(opts, ac.signal);
+        while (job.state !== "done" && job.state !== "error") {
+          await new Promise((r) => setTimeout(r, 700));
+          if (ac.signal.aborted) return;
+          job = await fetchCubeJob(job.job_id, ac.signal);
+          const j = job;
+          setProgress((prev) => ({
+            state: j.state,
+            downloadedMb: j.downloaded_mb,
+            totalMb: j.total_mb ?? product.size_mb,
+            started: prev?.started ?? Date.now(),
+          }));
+          setLoading(
+            j.state === "extracting"
+              ? `Extracting the aperture spectrum from ${product.name}…`
+              : `Downloading ${product.name}…`,
+          );
+        }
+        if (job.state === "error" || !job.spectrum)
+          throw new ApiError(502, job.message ?? "cube job failed");
+        const spectrum = job.spectrum;
+        fetchCubeCache()
+          .then(setCache)
+          .catch(() => undefined);
         if (!ac.signal.aborted) {
           addTrace({
             id: product.url,
@@ -842,11 +967,78 @@ export default function SpectrumPanel({
         if (!ac.signal.aborted)
           setError(e instanceof ApiError ? e.message : String(e));
       } finally {
-        if (!ac.signal.aborted) setLoading(null);
+        if (!ac.signal.aborted) {
+          setLoading(null);
+          setProgress(null);
+        }
       }
     },
     [extractPosition, radius, method, addTrace],
   );
+
+  // Elapsed-time ticker while something is loading; cache usage when the tab opens.
+  useEffect(() => {
+    if (!loading) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
+  useEffect(() => {
+    if (!active) return;
+    const ac = new AbortController();
+    fetchCubeCache(ac.signal)
+      .then(setCache)
+      .catch(() => undefined);
+    return () => ac.abort();
+  }, [active]);
+
+  const plotted = useMemo<PlottedItem[]>(() => {
+    const items: PlottedItem[] = allTraces.map((t) => ({
+      id: t.id,
+      label: t.label,
+      color: t.color,
+      visible: t.visible,
+      kind: t.kind,
+    }));
+    if (hiProfile)
+      items.push({
+        id: "hi-template",
+        label: `HI template (${hiProfile.survey ?? "catalogue"})`,
+        color: "#fbbf24",
+        visible: hiTemplateOn,
+        kind: "hi",
+      });
+    if (uploaded)
+      items.push({
+        id: "hi-upload",
+        label: `HI ${uploaded.name}`,
+        color: "#f97316",
+        visible: uploadOn,
+        kind: "hi",
+      });
+    return items;
+  }, [allTraces, hiProfile, hiTemplateOn, uploaded, uploadOn]);
+  const togglePlotted = useCallback((id: string, visible: boolean) => {
+    if (id === "hi-template") {
+      setHITemplateOn(visible);
+      if (visible) setXMode("velocity");
+    } else if (id === "hi-upload") {
+      setUploadOn(visible);
+      if (visible) setXMode("velocity");
+    } else
+      setTraces((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, visible } : t)),
+      );
+  }, []);
+  const removePlotted = useCallback((id: string) => {
+    if (id === "hi-template") {
+      setHIProfile(null);
+      setHITemplateOn(false);
+      setHISource(null);
+    } else if (id === "hi-upload") {
+      setUploaded(null);
+      setUploadOn(false);
+    } else setTraces((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   /** Select an observation (from the source column or the observation table) and start on it. */
   const select = useCallback(
@@ -874,7 +1066,7 @@ export default function SpectrumPanel({
       if (!target) return;
       const key = sourceKey(d);
       setHISource(key);
-      setShowHI(true);
+      setHITemplateOn(true);
       setXMode("velocity");
       setHIError(null);
       fetchHIProfile(
@@ -892,7 +1084,7 @@ export default function SpectrumPanel({
 
   // HI template on demand.
   useEffect(() => {
-    if (!showHI || !target || hiProfile) return;
+    if (!hiTemplateOn || !target || hiProfile) return;
     const ac = new AbortController();
     setHIError(null);
     fetchHIProfile(
@@ -907,7 +1099,7 @@ export default function SpectrumPanel({
         setHIError(e instanceof ApiError ? e.message : String(e));
       });
     return () => ac.abort();
-  }, [showHI, target, hiProfile]);
+  }, [hiTemplateOn, target, hiProfile]);
 
   const velocityOf = useCallback(
     (t: Trace, i: number): number | null => {
@@ -927,7 +1119,13 @@ export default function SpectrumPanel({
   );
 
   const figure = useMemo(() => {
-    if (!traces.length && !(xMode === "velocity" && showHI)) return null;
+    const hiTemplateShown = hiTemplateOn && hiProfile !== null;
+    const uploadShown = uploadOn && uploaded !== null;
+    if (
+      !traces.length &&
+      !(xMode === "velocity" && (hiTemplateShown || uploadShown))
+    )
+      return null;
     const centre = relative || cz === null ? 0 : cz;
     const lo = centre - window;
     const hi = centre + window;
@@ -1044,7 +1242,7 @@ export default function SpectrumPanel({
       });
     }
     const hiTraces: Data[] = [];
-    if (xMode === "velocity" && showHI) {
+    if (xMode === "velocity" && (hiTemplateShown || uploadShown)) {
       const hiX = (v: number) => (relative && cz !== null ? v - cz : v);
       const pushHI = (
         xv: number[],
@@ -1065,7 +1263,7 @@ export default function SpectrumPanel({
           hovertemplate: "%{x:.0f} km/s<br>%{y:.3f}<extra>" + name + "</extra>",
         });
       };
-      if (hiProfile)
+      if (hiTemplateShown && hiProfile)
         pushHI(
           hiProfile.velocity_kms.map(hiX),
           hiProfile.flux_jy,
@@ -1073,7 +1271,7 @@ export default function SpectrumPanel({
           "#fbbf24",
           "dash",
         );
-      if (uploaded)
+      if (uploadShown && uploaded)
         pushHI(
           uploaded.velocity.map(hiX),
           uploaded.flux,
@@ -1142,7 +1340,8 @@ export default function SpectrumPanel({
     referenceRadio,
     relative,
     cz,
-    showHI,
+    hiTemplateOn,
+    uploadOn,
     hiProfile,
     uploaded,
     normalised,
@@ -1154,7 +1353,7 @@ export default function SpectrumPanel({
     if (!file) return;
     try {
       setUploaded(parseHIText(await file.text(), file.name));
-      setShowHI(true);
+      setUploadOn(true);
       setXMode("velocity");
     } catch (e: unknown) {
       setHIError(e instanceof Error ? e.message : String(e));
@@ -1187,14 +1386,16 @@ export default function SpectrumPanel({
             onSearch={onSearch}
             current={current}
             onSelect={select}
-            traces={allTraces}
-            onToggleTrace={(id, visible) =>
-              setTraces((prev) =>
-                prev.map((t) => (t.id === id ? { ...t, visible } : t)),
-              )
-            }
-            onRemoveTrace={(id) =>
-              setTraces((prev) => prev.filter((t) => t.id !== id))
+            plotted={plotted}
+            onToggleTrace={togglePlotted}
+            onRemoveTrace={removePlotted}
+            cache={cache}
+            onClearCache={() =>
+              void clearCubeCache()
+                .then(setCache)
+                .catch((e: unknown) =>
+                  setError(e instanceof ApiError ? e.message : String(e)),
+                )
             }
             hiSource={hiSource}
             onHITemplate={loadHITemplate}
@@ -1435,13 +1636,13 @@ export default function SpectrumPanel({
           >
             <input
               type="checkbox"
-              checked={showHI}
+              checked={hiTemplateOn}
               onChange={(e) => {
-                setShowHI(e.target.checked);
+                setHITemplateOn(e.target.checked);
                 if (e.target.checked) setXMode("velocity");
               }}
             />{" "}
-            HI profile
+            HI template
           </label>
           <label className="cursor-pointer rounded border border-slate-700 px-1.5 py-0.5 text-slate-200 hover:bg-slate-800">
             upload HI (v, S)
@@ -1454,9 +1655,45 @@ export default function SpectrumPanel({
           </label>
         </div>
 
-        {loading && <p className="text-slate-400">{loading}</p>}
+        {loading && (
+          <div className="space-y-1" data-testid="progress">
+            <p className="text-slate-400">
+              {loading}
+              {progress && (
+                <span className="text-slate-500">{` · ${Math.max(0, Math.round((Date.now() - progress.started) / 1000))} s`}</span>
+              )}
+            </p>
+            {progress && (
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-full max-w-md overflow-hidden rounded bg-slate-800">
+                  {progress.state === "downloading" && progress.totalMb ? (
+                    <div
+                      className="h-full bg-emerald-500 transition-[width] duration-500"
+                      style={{
+                        width: `${Math.min(100, (100 * progress.downloadedMb) / progress.totalMb).toFixed(1)}%`,
+                      }}
+                    />
+                  ) : (
+                    <div className="h-full w-1/3 animate-pulse bg-sky-500/70" />
+                  )}
+                </div>
+                <span className="whitespace-nowrap text-slate-400">
+                  {progress.state === "downloading" && progress.totalMb
+                    ? `${progress.downloadedMb.toFixed(0)} / ${progress.totalMb.toFixed(0)} MB (${((100 * progress.downloadedMb) / progress.totalMb).toFixed(0)}%)`
+                    : progress.state === "downloading"
+                      ? `${progress.downloadedMb.toFixed(0)} MB`
+                      : progress.state === "extracting"
+                        ? "extracting"
+                        : progress.state === "soda"
+                          ? "waiting for ESO"
+                          : "starting"}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
         {error && <p className="text-rose-300">{error}</p>}
-        {hiError && showHI && (
+        {hiError && hiTemplateOn && (
           <p className="text-amber-300">HI profile: {hiError}</p>
         )}
         {traces.flatMap((t) =>
@@ -1482,6 +1719,12 @@ export default function SpectrumPanel({
             }}
           />
         )}
+        <PlottedList
+          items={plotted}
+          onToggle={togglePlotted}
+          onRemove={removePlotted}
+          compact
+        />
         {xMode === "velocity" && normalised && traces.length > 1 && (
           <p className="text-[11px] text-slate-500">
             Amplitudes are normalised independently for a shape comparison:
@@ -1499,7 +1742,7 @@ export default function SpectrumPanel({
                   `${t.label}: ${t.spectrum.n_channels} ch, ${t.spectrum.n_spaxels} spx, pixel ${t.spectrum.pixel_scale_arcsec?.toFixed(2)}″${t.spectrum.cached ? ", cached" : ""}`,
               )
               .join(" · ")}
-            {showHI && hiProfile && xMode === "velocity"
+            {hiTemplateOn && hiProfile && xMode === "velocity"
               ? ` · ${hiProfile.note}`
               : ""}
           </p>

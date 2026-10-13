@@ -12,7 +12,9 @@ import shutil
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -147,15 +149,28 @@ def product_sort_key(p: CubeProduct) -> tuple:
     return (_KIND_RANK.get(p.kind, 9), "pbcor" not in p.name.lower(), p.size_mb or 0)
 
 
+Progress = Callable[[int, int | None], None]
+
+
+def _plain_path(path: Path) -> Path:
+    """Where the uncompressed copy of a .gz product lives (the product itself otherwise)."""
+    return path.with_name(path.name[:-3]) if path.name.endswith(".gz") else path
+
+
 class CubeStore:
     """Download cube products once, keep them on disk, evict oldest beyond the cache limit."""
 
     def __init__(
-        self, cache_dir: Path = CACHE_DIR, max_mb: float = DEFAULT_MAX_MB, timeout: float = 600.0
+        self,
+        cache_dir: Path = CACHE_DIR,
+        max_mb: float = DEFAULT_MAX_MB,
+        timeout: float = 600.0,
+        limit_bytes: int = CACHE_LIMIT_BYTES,
     ):
         self.cache_dir = cache_dir
         self.max_mb = max_mb
         self.timeout = timeout
+        self.limit_bytes = limit_bytes
         self._lock = threading.Lock()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -164,14 +179,43 @@ class CubeStore:
         name = os.path.basename(urlparse(url).path) or "cube.fits"
         return self.cache_dir / f"{digest}-{name}"
 
-    def fetch(self, url: str, max_mb: float | None = None) -> Path:
+    def cached(self, url: str) -> Path | None:
+        """The product on disk, compressed or already unpacked, or None."""
+        path = self.path_for(url)
+        for candidate in (_plain_path(path), path):
+            if candidate.exists() and candidate.stat().st_size > 0:
+                os.utime(candidate, None)
+                return candidate
+        return None
+
+    def usage(self) -> dict:
+        files = [p for p in self.cache_dir.glob("*") if p.is_file()]
+        return {
+            "dir": str(self.cache_dir),
+            "files": len(files),
+            "bytes": sum(p.stat().st_size for p in files),
+            "limit_bytes": self.limit_bytes,
+        }
+
+    def clear(self) -> dict:
+        with self._lock:
+            for p in self.cache_dir.glob("*"):
+                if p.is_file():
+                    p.unlink(missing_ok=True)
+        return self.usage()
+
+    def fetch(
+        self, url: str, max_mb: float | None = None, progress: Progress | None = None
+    ) -> Path:
         if not _allowed(url):
             raise ValueError("Product URL must point at the ALMA or ESO archive")
         limit = (max_mb or self.max_mb) * 1e6
+        hit = self.cached(url)
+        if hit is not None:
+            if progress:
+                progress(hit.stat().st_size, hit.stat().st_size)
+            return hit
         path = self.path_for(url)
-        if path.exists() and path.stat().st_size > 0:
-            os.utime(path, None)
-            return path
         tmp = path.with_suffix(path.suffix + ".part")
         t0 = time.monotonic()
         with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
@@ -183,10 +227,15 @@ class CubeStore:
                         f"Product is {float(length) / 1e6:.0f} MB, above the {limit / 1e6:.0f} MB "
                         "download limit; raise the limit or pick a smaller product"
                     )
+                total = int(length) if length else None
                 written = 0
+                if progress:
+                    progress(0, total)
                 with open(tmp, "wb") as fh:
                     for chunk in res.iter_bytes(chunk_size=1 << 20):
                         written += len(chunk)
+                        if progress:
+                            progress(written, total)
                         if written > limit:
                             fh.close()
                             tmp.unlink(missing_ok=True)
@@ -203,7 +252,7 @@ class CubeStore:
         with self._lock:
             files = sorted(self.cache_dir.glob("*"), key=lambda p: p.stat().st_mtime)
             total = sum(p.stat().st_size for p in files)
-            while files and total > CACHE_LIMIT_BYTES:
+            while files and total > self.limit_bytes:
                 victim = files.pop(0)
                 total -= victim.stat().st_size
                 victim.unlink(missing_ok=True)
@@ -219,13 +268,14 @@ def _plain_fits(path: Path) -> Path:
         magic = fh.read(2)
     if magic != b"\x1f\x8b":
         return path
-    plain = path.with_name(path.name[:-3] if path.name.endswith(".gz") else path.name + ".fits")
+    plain = _plain_path(path) if path.name.endswith(".gz") else path.with_name(path.name + ".fits")
     if plain.exists() and plain.stat().st_size > 0:
         return plain
     tmp = plain.with_suffix(plain.suffix + ".part")
     with gzip.open(path, "rb") as src, open(tmp, "wb") as dst:
         shutil.copyfileobj(src, dst, 1 << 20)
     tmp.replace(plain)
+    path.unlink(missing_ok=True)  # keep only the unpacked copy; the cache tracks either
     return plain
 
 
@@ -246,12 +296,30 @@ def extract_from_file(
     return spec
 
 
+@dataclass
+class CubeJob:
+    """A download-and-extract run in a background thread, polled by the client."""
+
+    id: str
+    state: str = "queued"  # queued | downloading | extracting | done | error
+    downloaded: int = 0
+    total: int | None = None
+    message: str | None = None
+    result: Spectrum1D | None = None
+    created: float = field(default_factory=time.monotonic)
+    finished: float | None = None
+
+
+JOB_TTL_S = 900.0
+
+
 class CubeSpectrumService:
     def __init__(self, store: CubeStore | None = None, cache_ttl: int = 3600):
         self.store = store or CubeStore()
         self.cache_ttl = cache_ttl
         self._cache: dict[tuple, tuple[float, Spectrum1D]] = {}
         self._lock = threading.Lock()
+        self._jobs: dict[str, CubeJob] = {}
 
     def spectrum(
         self,
@@ -261,6 +329,8 @@ class CubeSpectrumService:
         radius_arcsec: float,
         method: str = "sum",
         max_mb: float | None = None,
+        progress: Progress | None = None,
+        on_extract: Callable[[], None] | None = None,
     ) -> Spectrum1D:
         key = (product_url, round(ra, 6), round(dec, 6), round(radius_arcsec, 2), method)
         now = time.monotonic()
@@ -268,12 +338,63 @@ class CubeSpectrumService:
             hit = self._cache.get(key)
             if hit and hit[0] > now:
                 return hit[1].model_copy(update={"cached": True})
-        path = self.store.fetch(product_url, max_mb=max_mb)
+        path = self.store.fetch(product_url, max_mb=max_mb, progress=progress)
+        if on_extract:
+            on_extract()
         spec = extract_from_file(path, ra, dec, radius_arcsec, method=method)
         spec.source["product_url"] = product_url
         with self._lock:
             self._cache[key] = (now + self.cache_ttl, spec)
         return spec
+
+    # -- background jobs with progress -------------------------------------------------
+    def start_job(
+        self,
+        product_url: str,
+        ra: float,
+        dec: float,
+        radius_arcsec: float,
+        method: str = "sum",
+        max_mb: float | None = None,
+    ) -> CubeJob:
+        self._reap_jobs()
+        job = CubeJob(id=uuid.uuid4().hex[:12])
+        with self._lock:
+            self._jobs[job.id] = job
+
+        def progress(done: int, total: int | None) -> None:
+            job.state = "downloading"
+            job.downloaded, job.total = done, total
+
+        def on_extract() -> None:
+            job.state = "extracting"
+
+        def run() -> None:
+            try:
+                job.result = self.spectrum(
+                    product_url, ra, dec, radius_arcsec, method, max_mb, progress, on_extract
+                )
+                job.state = "done"
+            except Exception as exc:  # noqa: BLE001
+                job.state = "error"
+                job.message = f"{type(exc).__name__}: {exc}"[:500]
+                log.warning("Cube job %s failed: %s", job.id, job.message)
+            finally:
+                job.finished = time.monotonic()
+
+        threading.Thread(target=run, name=f"cube-job-{job.id}", daemon=True).start()
+        return job
+
+    def job(self, job_id: str) -> CubeJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def _reap_jobs(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            for jid, j in list(self._jobs.items()):
+                if j.finished is not None and now - j.finished > JOB_TTL_S:
+                    del self._jobs[jid]
 
 
 _service: CubeSpectrumService | None = None
@@ -288,6 +409,11 @@ def get_cube_service() -> CubeSpectrumService:
 
             s = get_settings()
             _service = CubeSpectrumService(
-                store=CubeStore(max_mb=s.cube_download_max_mb, timeout=s.remote_timeout * 30)
+                store=CubeStore(
+                    cache_dir=Path(s.cube_cache_dir) if s.cube_cache_dir else CACHE_DIR,
+                    max_mb=s.cube_download_max_mb,
+                    timeout=s.remote_timeout * 30,
+                    limit_bytes=int(s.cube_cache_gb * 1024**3),
+                )
             )
         return _service

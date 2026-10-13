@@ -1,6 +1,8 @@
 import { keyHeaders, loadKeys } from "./keys";
 import type {
   ArchiveSearch,
+  CubeCacheStatus,
+  CubeJobStatus,
   CubeProduct,
   HIProfile,
   HISearch,
@@ -303,4 +305,55 @@ export function fetchCubeSpectrum(
   });
   if (opts.maxMb) params.set("max_mb", String(opts.maxMb));
   return getJson<Spectrum1D>(`/api/spectrum/cube?${params.toString()}`, signal);
+}
+
+/** Start a cube download-and-extract job; poll it with fetchCubeJob for progress. */
+export function startCubeSpectrumJob(
+  opts: {
+    productUrl: string;
+    ra: number;
+    dec: number;
+    radiusArcsec: number;
+    method: "sum" | "mean";
+    maxMb?: number;
+  },
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    product_url: opts.productUrl,
+    ra: opts.ra.toFixed(6),
+    dec: opts.dec.toFixed(6),
+    radius_arcsec: String(opts.radiusArcsec),
+    method: opts.method,
+  });
+  if (opts.maxMb) params.set("max_mb", String(opts.maxMb));
+  return postJson<CubeJobStatus>(
+    `/api/spectrum/cube/jobs?${params.toString()}`,
+    {},
+    signal,
+  );
+}
+
+export function fetchCubeJob(jobId: string, signal?: AbortSignal) {
+  return getJson<CubeJobStatus>(
+    `/api/spectrum/cube/jobs/${encodeURIComponent(jobId)}`,
+    signal,
+  );
+}
+
+export function fetchCubeCache(signal?: AbortSignal) {
+  return getJson<CubeCacheStatus>("/api/cubes/cache", signal);
+}
+
+export async function clearCubeCache(): Promise<CubeCacheStatus> {
+  const res = await fetch(`${BASE}/api/cubes/cache`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok)
+    throw new ApiError(
+      res.status,
+      formatDetail(await res.json().catch(() => null), res.statusText),
+    );
+  return (await res.json()) as CubeCacheStatus;
 }

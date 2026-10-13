@@ -5,7 +5,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
-from app.schemas.spectra import CubeProductOut, HIProfile, SpectralLine, Spectrum1D
+from app.schemas.spectra import (
+    CubeCacheStatus,
+    CubeJobStatus,
+    CubeProductOut,
+    HIProfile,
+    SpectralLine,
+    Spectrum1D,
+)
 from app.services import cubes
 from app.services.hi import get_hi_matcher
 from app.services.hiprofile import profile_from_detection
@@ -185,3 +192,59 @@ async def cube_spectrum(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}"[:500]) from exc
+
+
+def _job_status(job: cubes.CubeJob) -> CubeJobStatus:
+    return CubeJobStatus(
+        job_id=job.id,
+        state=job.state,
+        downloaded_mb=round(job.downloaded / 1e6, 1),
+        total_mb=round(job.total / 1e6, 1) if job.total else None,
+        message=job.message,
+        spectrum=job.result if job.state == "done" else None,
+    )
+
+
+@router.post("/spectrum/cube/jobs", response_model=CubeJobStatus)
+async def cube_spectrum_start(
+    product_url: str = Query(..., description="FITS cube product URL from /api/cubes/products"),
+    ra: float = Query(..., ge=0.0, lt=360.0),
+    dec: float = Query(..., ge=-90.0, le=90.0),
+    radius_arcsec: float = Query(3.0, gt=0.0, le=60.0),
+    method: str = Query("sum", pattern="^(sum|mean)$"),
+    max_mb: float | None = Query(None, gt=0, le=200_000, description="Override the download cap"),
+) -> CubeJobStatus:
+    """Start a download-and-extract job; poll /spectrum/cube/jobs/{id} for progress."""
+    if not cubes._allowed(product_url):
+        raise HTTPException(status_code=400, detail="product_url must point at ALMA or ESO")
+    job = cubes.get_cube_service().start_job(product_url, ra, dec, radius_arcsec, method, max_mb)
+    return _job_status(job)
+
+
+@router.get("/spectrum/cube/jobs/{job_id}", response_model=CubeJobStatus)
+async def cube_spectrum_job(job_id: str) -> CubeJobStatus:
+    job = cubes.get_cube_service().job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired job")
+    return _job_status(job)
+
+
+def _cache_status(usage: dict) -> CubeCacheStatus:
+    return CubeCacheStatus(
+        dir=usage["dir"],
+        files=usage["files"],
+        bytes_mb=round(usage["bytes"] / 1e6, 1),
+        limit_mb=round(usage["limit_bytes"] / 1e6, 1),
+    )
+
+
+@router.get("/cubes/cache", response_model=CubeCacheStatus)
+async def cube_cache() -> CubeCacheStatus:
+    """Disk used by downloaded cube products."""
+    return _cache_status(cubes.get_cube_service().store.usage())
+
+
+@router.delete("/cubes/cache", response_model=CubeCacheStatus)
+async def cube_cache_clear() -> CubeCacheStatus:
+    """Delete every downloaded cube product."""
+    return _cache_status(await run_in_threadpool(cubes.get_cube_service().store.clear))

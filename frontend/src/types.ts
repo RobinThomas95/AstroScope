@@ -381,3 +381,19 @@ export interface LlmModels {
   suggested: string | null;
   all_models: string[];
 }
+
+export interface CubeJobStatus {
+  job_id: string;
+  state: "queued" | "downloading" | "extracting" | "done" | "error";
+  downloaded_mb: number;
+  total_mb: number | null;
+  message: string | null;
+  spectrum: Spectrum1D | null;
+}
+
+export interface CubeCacheStatus {
+  dir: string;
+  files: number;
+  bytes_mb: number;
+  limit_mb: number;
+}
