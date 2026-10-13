@@ -24,6 +24,7 @@ full-cube downloads described under [Disk use](#disk-use-and-the-cube-cache).
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Data and service credits](#data-and-service-credits)
+- [Citing AstroScope](#citing-astroscope)
 
 ## What AstroScope does
 
@@ -414,3 +415,12 @@ AstroScope only works because these services exist and are open:
 
 Please acknowledge these services in any work that uses what AstroScope shows you, following
 each service's own acknowledgement guidelines.
+
+## Citing AstroScope
+
+Any scientific work that arises from AstroScope, whether a publication, a talk or a thesis,
+should acknowledge this repository:
+
+> This research made use of AstroScope (https://github.com/sardarkagrandson/know-your-object).
+
+together with the acknowledgements of the archives and services listed above.
