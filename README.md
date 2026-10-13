@@ -425,6 +425,6 @@ each service's own acknowledgement guidelines.
 Any scientific work that arises from AstroScope, whether a publication, a talk or a thesis,
 should acknowledge this repository:
 
-> This research made use of AstroScope (https://github.com/sardarkagrandson/know-your-object).
+> This research made use of AstroScope (https://github.com/RobinThomas95/AstroScope).
 
 together with the acknowledgements of the archives and services listed above.
