@@ -137,8 +137,8 @@ arrive as a few megabytes.
 ### 1. Get the code
 
 ```bash
-git clone https://github.com/sardarkagrandson/know-your-object.git
-cd know-your-object
+git clone https://github.com/RobinThomas95/AstroScope.git
+cd AstroScope
 ```
 
 ### 2. Provide Python 3.11+ and Node 18+
