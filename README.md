@@ -1,4 +1,8 @@
-# AstroScope
+<p align="center">
+  <img src="frontend/public/astroscope.svg" alt="AstroScope logo" width="128" height="128">
+</p>
+
+<h1 align="center">AstroScope</h1>
 
 AstroScope is a browser application for reconnaissance of one astronomical target at a time.
 Type a galaxy name or a coordinate pair and it gathers, in one page, what the Virtual

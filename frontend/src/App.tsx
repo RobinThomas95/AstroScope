@@ -67,6 +67,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-4 border-b border-slate-800 px-4 py-3">
+        <img src="/astroscope.svg" alt="" className="h-8 w-8" />
         <h1 className="text-xl font-bold tracking-tight text-white">
           Astro<span className="text-sky-400">Scope</span>
         </h1>
