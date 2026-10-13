@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ARCHIVE_KEYS, ApiError, searchArchives, searchHI } from "../lib/api";
 import LiteraturePanel from "./LiteraturePanel";
 import SpectrumPanel from "./SpectrumPanel";
+import { extractKind, toSpectrumRequest } from "../lib/spectrumRequest";
 import type {
   ArchiveObservation,
   ArchiveResult,
@@ -20,13 +21,6 @@ interface Props {
 
 type Tab = "obs" | "hi" | "spectrum" | "literature";
 
-function extractKind(o: ArchiveObservation): "muse" | "alma" | null {
-  if (o.public === false || !o.access_url) return null;
-  if (o.archive === "eso" && (o.instrument ?? "").toUpperCase() === "MUSE" && (o.dataproduct_type ?? "").toLowerCase() === "cube")
-    return "muse";
-  if (o.archive === "alma" && (o.dataproduct_type ?? "").toLowerCase() === "cube") return "alma";
-  return null;
-}
 type SortKey = "date" | "exptime" | "sep" | "instrument";
 
 function num(v: number | null | undefined, digits = 1, suffix = ""): string {
@@ -67,7 +61,10 @@ function missionRank(name: string): number {
 }
 
 function dateSpan(rows: ArchiveObservation[]): string {
-  const dates = rows.map((o) => o.date_obs).filter((d): d is string => !!d).sort();
+  const dates = rows
+    .map((o) => o.date_obs)
+    .filter((d): d is string => !!d)
+    .sort();
   if (!dates.length) return "";
   const a = dates[0].slice(0, 10);
   const b = dates[dates.length - 1].slice(0, 10);
@@ -91,7 +88,13 @@ interface MissionGroup {
   instruments: InstrumentGroup[];
 }
 
-function Links({ o, onSpectrum }: { o: ArchiveObservation; onSpectrum?: (r: SpectrumRequest) => void }) {
+function Links({
+  o,
+  onSpectrum,
+}: {
+  o: ArchiveObservation;
+  onSpectrum?: (r: SpectrumRequest) => void;
+}) {
   const link = (href: string | null, label: string) =>
     href ? (
       <a
@@ -108,18 +111,7 @@ function Links({ o, onSpectrum }: { o: ArchiveObservation; onSpectrum?: (r: Spec
       {onSpectrum && extractKind(o) && (
         <button
           type="button"
-          onClick={() =>
-            onSpectrum({
-              kind: extractKind(o) as "muse" | "alma",
-              datalinkUrl: o.access_url as string,
-              label: `${extractKind(o) === "alma" ? "ALMA" : "MUSE"} ${(o.obs_id ?? "").replace(/^uid:\/\//, "").slice(0, 40)} ${o.date_obs?.slice(0, 10) ?? ""}`.trim(),
-              obsId: o.obs_id,
-              cubeRa: o.ra_deg,
-              cubeDec: o.dec_deg,
-              coversTarget: o.covers_target,
-              spwRanges: typeof o.extra?.spw_ranges_ghz === "string" ? o.extra.spw_ranges_ghz : null,
-            })
-          }
+          onClick={() => onSpectrum(toSpectrumRequest(o) as SpectrumRequest)}
           className="rounded border border-emerald-700 px-1.5 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-900/40"
           title={
             o.covers_target === false
@@ -154,7 +146,9 @@ function ObsRow({
           {showMission ? instrumentKey(o) : instrumentBase(o)}
         </span>
         {!showMission && mode && (
-          <span className="ml-1 rounded bg-slate-800 px-1 text-[10px] text-slate-400">{mode}</span>
+          <span className="ml-1 rounded bg-slate-800 px-1 text-[10px] text-slate-400">
+            {mode}
+          </span>
         )}
         {showMission && o.collection && o.collection !== o.instrument && (
           <span className="ml-1 text-slate-500">{o.collection}</span>
@@ -165,25 +159,43 @@ function ObsRow({
           </span>
         )}
         {o.covers_target === true && (
-          <span className="ml-1 rounded bg-emerald-900/50 px-1 text-[10px] text-emerald-300" title="Footprint contains the target position">
+          <span
+            className="ml-1 rounded bg-emerald-900/50 px-1 text-[10px] text-emerald-300"
+            title="Footprint contains the target position"
+          >
             on target
           </span>
         )}
       </td>
-      <td className="max-w-[14rem] truncate px-2 py-1 font-mono text-[11px] text-slate-300" title={o.obs_id ?? ""}>
+      <td
+        className="max-w-[14rem] truncate px-2 py-1 font-mono text-[11px] text-slate-300"
+        title={o.obs_id ?? ""}
+      >
         {o.obs_id ?? "—"}
-        {o.target_name && <div className="truncate text-slate-500">{o.target_name}</div>}
+        {o.target_name && (
+          <div className="truncate text-slate-500">{o.target_name}</div>
+        )}
       </td>
       <td className="px-2 py-1 font-mono text-[11px] text-slate-300">
         {o.date_obs ? o.date_obs.replace("T", " ").replace("Z", "") : "—"}
       </td>
-      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.exptime_s, 0)}</td>
-      <td className="px-2 py-1 whitespace-nowrap text-slate-300">{o.band ?? "—"}</td>
-      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.resolution_arcsec, 2)}</td>
-      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(o.separation_arcmin, 2)}</td>
+      <td className="px-2 py-1 text-right font-mono text-[11px]">
+        {num(o.exptime_s, 0)}
+      </td>
+      <td className="px-2 py-1 whitespace-nowrap text-slate-300">
+        {o.band ?? "—"}
+      </td>
+      <td className="px-2 py-1 text-right font-mono text-[11px]">
+        {num(o.resolution_arcsec, 2)}
+      </td>
+      <td className="px-2 py-1 text-right font-mono text-[11px]">
+        {num(o.separation_arcmin, 2)}
+      </td>
       <td className="px-2 py-1 text-slate-400">
         {o.dataproduct_type ?? "—"}
-        {o.calib_level !== null && <span className="text-slate-600"> L{o.calib_level}</span>}
+        {o.calib_level !== null && (
+          <span className="text-slate-600"> L{o.calib_level}</span>
+        )}
       </td>
       <td className="px-2 py-1">
         <Links o={o} onSpectrum={onSpectrum} />
@@ -213,11 +225,15 @@ function GroupRows({
             onClick={() => onToggle(group.name)}
             className="flex w-full items-center gap-2 text-left"
           >
-            <span className="w-3 text-slate-400">{missionOpen ? "▾" : "▸"}</span>
+            <span className="w-3 text-slate-400">
+              {missionOpen ? "▾" : "▸"}
+            </span>
             <span className="font-semibold text-white">{group.name}</span>
             <span className="text-slate-400">
               {group.count} observation{group.count === 1 ? "" : "s"} ·{" "}
-              {group.instruments.map((i) => `${i.name} ${i.rows.length}`).join(", ")}
+              {group.instruments
+                .map((i) => `${i.name} ${i.rows.length}`)
+                .join(", ")}
             </span>
           </button>
         </td>
@@ -255,38 +271,59 @@ function GroupInstrument({
     <>
       <tr className="border-t border-slate-800/60 bg-slate-900/60">
         <td colSpan={9} className="px-2 py-0.5 pl-6">
-          <button type="button" onClick={onToggle} className="flex w-full items-center gap-2 text-left">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex w-full items-center gap-2 text-left"
+          >
             <span className="w-3 text-slate-500">{open ? "▾" : "▸"}</span>
             <span className="font-medium text-slate-100">{inst.name}</span>
             <span className="text-slate-500">
               {inst.rows.length} · {dateSpan(inst.rows)}
-              {totalExposure(inst.rows) ? ` · ${totalExposure(inst.rows)} total` : ""}
+              {totalExposure(inst.rows)
+                ? ` · ${totalExposure(inst.rows)} total`
+                : ""}
             </span>
           </button>
         </td>
       </tr>
       {open &&
         inst.rows.map((o, i) => (
-          <ObsRow key={`${o.archive}-${o.obs_id ?? i}-${i}`} o={o} onSpectrum={onSpectrum} />
+          <ObsRow
+            key={`${o.archive}-${o.obs_id ?? i}-${i}`}
+            o={o}
+            onSpectrum={onSpectrum}
+          />
         ))}
     </>
   );
 }
 
-export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onOpenKeys }: Props) {
+export default function ArchivePanel({
+  target,
+  radiusArcmin,
+  onRadiusChange,
+  onOpenKeys,
+}: Props) {
   const [tab, setTab] = useState<Tab>("obs");
   const [archiveResults, setArchiveResults] = useState<ArchiveResult[]>([]);
-  const [pendingArchives, setPendingArchives] = useState<Set<string>>(new Set());
+  const [pendingArchives, setPendingArchives] = useState<Set<string>>(
+    new Set(),
+  );
   const [searched, setSearched] = useState(false);
   const [hi, setHI] = useState<HISearch | null>(null);
   const [loadingObs, setLoadingObs] = useState(false);
   const [loadingHI, setLoadingHI] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [instrumentFilter, setInstrumentFilter] = useState<Set<string>>(new Set());
+  const [instrumentFilter, setInstrumentFilter] = useState<Set<string>>(
+    new Set(),
+  );
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [collapsed, setCollapsed] = useState(false);
   const [grouped, setGrouped] = useState(true);
-  const [spectrumRequest, setSpectrumRequest] = useState<SpectrumRequest | null>(null);
+  const [spectrumRequest, setSpectrumRequest] =
+    useState<SpectrumRequest | null>(null);
+  const [searchNonce, setSearchNonce] = useState(0);
   useEffect(() => {
     const id = setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
     return () => clearTimeout(id);
@@ -325,15 +362,27 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
       searchArchives(ra, dec, radiusArcmin, [key], ac.signal)
         .then((r) => {
           if (ac.signal.aborted) return;
-          setArchiveResults((prev) => [...prev.filter((x) => x.archive !== key), ...r.results]);
+          setArchiveResults((prev) => [
+            ...prev.filter((x) => x.archive !== key),
+            ...r.results,
+          ]);
         })
         .catch((e: unknown) => {
           if (ac.signal.aborted) return;
           const msg = e instanceof ApiError ? e.message : String(e);
           setArchiveResults((prev) => [
             ...prev.filter((x) => x.archive !== key),
-            { archive: key, label: key.toUpperCase(), status: "error", error: msg, table: null,
-              count: 0, truncated: false, elapsed_s: null, observations: [] },
+            {
+              archive: key,
+              label: key.toUpperCase(),
+              status: "error",
+              error: msg,
+              table: null,
+              count: 0,
+              truncated: false,
+              elapsed_s: null,
+              observations: [],
+            },
           ]);
         })
         .finally(() => {
@@ -354,13 +403,13 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
       })
       .finally(() => !ac.signal.aborted && setLoadingHI(false));
     return () => ac.abort();
-  }, [target, radiusArcmin]);
+  }, [target, radiusArcmin, searchNonce]);
 
   const archives = useMemo<ArchiveSearch | null>(() => {
     if (!searched || !target) return null;
-    const ordered = ARCHIVE_KEYS.map((k) => archiveResults.find((r) => r.archive === k)).filter(
-      (r): r is ArchiveResult => !!r,
-    );
+    const ordered = ARCHIVE_KEYS.map((k) =>
+      archiveResults.find((r) => r.archive === k),
+    ).filter((r): r is ArchiveResult => !!r);
     const counts: Record<string, number> = {};
     for (const r of ordered)
       for (const o of r.observations) {
@@ -385,10 +434,14 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
     const rows = instrumentFilter.size
       ? allObs.filter((o) => instrumentFilter.has(instrumentKey(o)))
       : allObs.slice();
-    const cmp: Record<SortKey, (a: ArchiveObservation, b: ArchiveObservation) => number> = {
+    const cmp: Record<
+      SortKey,
+      (a: ArchiveObservation, b: ArchiveObservation) => number
+    > = {
       date: (a, b) => (b.mjd_obs ?? -Infinity) - (a.mjd_obs ?? -Infinity),
       exptime: (a, b) => (b.exptime_s ?? -1) - (a.exptime_s ?? -1),
-      sep: (a, b) => (a.separation_arcmin ?? Infinity) - (b.separation_arcmin ?? Infinity),
+      sep: (a, b) =>
+        (a.separation_arcmin ?? Infinity) - (b.separation_arcmin ?? Infinity),
       instrument: (a, b) => instrumentKey(a).localeCompare(instrumentKey(b)),
     };
     return rows.sort(cmp[sortKey]);
@@ -412,7 +465,11 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
           .map(([iname, rows]) => ({ name: iname, rows }))
           .sort((a, b) => a.name.localeCompare(b.name)),
       }))
-      .sort((a, b) => missionRank(a.name) - missionRank(b.name) || a.name.localeCompare(b.name));
+      .sort(
+        (a, b) =>
+          missionRank(a.name) - missionRank(b.name) ||
+          a.name.localeCompare(b.name),
+      );
   }, [observations]);
 
   // Missions start open; instrument groups start open only when the whole table is small.
@@ -420,7 +477,8 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
     const next = new Set<string>();
     for (const g of groups) {
       next.add(g.name);
-      if (observations.length <= 25) for (const i of g.instruments) next.add(`${g.name}/${i.name}`);
+      if (observations.length <= 25)
+        for (const i of g.instruments) next.add(`${g.name}/${i.name}`);
     }
     setOpen(next);
   }, [groups, observations.length]);
@@ -476,7 +534,9 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
             type="button"
             onClick={() => setTab(t)}
             className={`rounded px-2 py-0.5 ${
-              tab === t ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
+              tab === t
+                ? "bg-slate-800 text-white"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             {t === "obs"
@@ -489,7 +549,11 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
           </button>
         ))}
         <span className="ml-2 text-slate-500">
-          {loadingObs || loadingHI ? "querying…" : target ? `around ${target.main_id ?? target.query}` : "no target"}
+          {loadingObs || loadingHI
+            ? "querying…"
+            : target
+              ? `around ${target.main_id ?? target.query}`
+              : "no target"}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <label className="text-slate-400">radius</label>
@@ -520,7 +584,8 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
           {error && <p className="px-3 py-2 text-xs text-rose-300">{error}</p>}
           {!target && (
             <p className="px-3 py-3 text-xs text-slate-500">
-              Resolve a target to cross-match the ESO, MAST and ALMA archives and HI surveys.
+              Resolve a target to cross-match the ESO, MAST and ALMA archives
+              and HI surveys.
             </p>
           )}
 
@@ -539,30 +604,38 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
                         : "bg-rose-900/50 text-rose-300"
                     }`}
                   >
-                    {r.label}: {r.status === "ok" ? `${r.count}${r.truncated ? "+" : ""}` : "error"}
+                    {r.label}:{" "}
+                    {r.status === "ok"
+                      ? `${r.count}${r.truncated ? "+" : ""}`
+                      : "error"}
                     {r.status === "ok" && r.error ? " (partial)" : ""}
                   </span>
                 ))}
                 {[...pendingArchives].map((k) => (
-                  <span key={k} className="animate-pulse rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">
+                  <span
+                    key={k}
+                    className="animate-pulse rounded bg-slate-800 px-1.5 py-0.5 text-slate-400"
+                  >
                     {k.toUpperCase()}: querying…
                   </span>
                 ))}
                 <span className="mx-1 text-slate-600">|</span>
-                {Object.entries(archives.instrument_counts).map(([name, count]) => (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => toggleInstrument(name)}
-                    className={`rounded border px-1.5 py-0.5 ${
-                      instrumentFilter.has(name)
-                        ? "border-sky-500 bg-sky-900/40 text-sky-200"
-                        : "border-slate-700 text-slate-300 hover:bg-slate-800"
-                    }`}
-                  >
-                    {name} <span className="text-slate-500">{count}</span>
-                  </button>
-                ))}
+                {Object.entries(archives.instrument_counts).map(
+                  ([name, count]) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => toggleInstrument(name)}
+                      className={`rounded border px-1.5 py-0.5 ${
+                        instrumentFilter.has(name)
+                          ? "border-sky-500 bg-sky-900/40 text-sky-200"
+                          : "border-slate-700 text-slate-300 hover:bg-slate-800"
+                      }`}
+                    >
+                      {name} <span className="text-slate-500">{count}</span>
+                    </button>
+                  ),
+                )}
                 {instrumentFilter.size > 0 && (
                   <button
                     type="button"
@@ -573,15 +646,27 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
                   </button>
                 )}
                 <label className="ml-auto flex cursor-pointer items-center gap-1 text-slate-300">
-                  <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={grouped}
+                    onChange={(e) => setGrouped(e.target.checked)}
+                  />
                   group by telescope
                 </label>
                 {grouped && (
                   <>
-                    <button type="button" onClick={() => setAll(true)} className="text-slate-400 underline">
+                    <button
+                      type="button"
+                      onClick={() => setAll(true)}
+                      className="text-slate-400 underline"
+                    >
                       expand all
                     </button>
-                    <button type="button" onClick={() => setAll(false)} className="text-slate-400 underline">
+                    <button
+                      type="button"
+                      onClick={() => setAll(false)}
+                      className="text-slate-400 underline"
+                    >
                       collapse all
                     </button>
                   </>
@@ -649,11 +734,23 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
               target={target}
               request={spectrumRequest}
               active={tab === "spectrum" && !collapsed}
-              hiVelocityKms={hiDetections.find((d) => d.velocity_kms !== null)?.velocity_kms ?? null}
+              hiVelocityKms={
+                hiDetections.find((d) => d.velocity_kms !== null)
+                  ?.velocity_kms ?? null
+              }
+              observations={archiveResults.flatMap((r) => r.observations)}
+              hiDetections={hiDetections}
+              searched={searched}
+              searching={loadingObs || pendingArchives.size > 0}
+              onSearch={() => setSearchNonce((n) => n + 1)}
             />
           </div>
           <div className={tab === "literature" ? "" : "hidden"}>
-            <LiteraturePanel target={target} onOpenKeys={onOpenKeys} active={tab === "literature" && !collapsed} />
+            <LiteraturePanel
+              target={target}
+              onOpenKeys={onOpenKeys}
+              active={tab === "literature" && !collapsed}
+            />
           </div>
 
           {tab === "hi" && hi && (
@@ -669,10 +766,14 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
                         : "bg-rose-900/50 text-rose-300"
                     }`}
                   >
-                    {r.survey}: {r.status === "ok" ? r.detections.length : "error"}
+                    {r.survey}:{" "}
+                    {r.status === "ok" ? r.detections.length : "error"}
                   </span>
                 ))}
-                <span className="ml-auto text-slate-500">search radius {hi.radius_arcmin.toFixed(1)}′ (half beam, min 3′)</span>
+                <span className="ml-auto text-slate-500">
+                  search radius {hi.radius_arcmin.toFixed(1)}′ (half beam, min
+                  3′)
+                </span>
               </div>
               <table className="w-full text-left text-xs">
                 <thead className="sticky top-0 bg-slate-900 text-[10px] uppercase tracking-wide text-slate-500">
@@ -691,31 +792,64 @@ export default function ArchivePanel({ target, radiusArcmin, onRadiusChange, onO
                 </thead>
                 <tbody>
                   {hiDetections.map((d, i) => (
-                    <tr key={`${d.catalog}-${d.source_id ?? i}`} className="border-t border-slate-800/60 hover:bg-slate-800/40">
+                    <tr
+                      key={`${d.catalog}-${d.source_id ?? i}`}
+                      className="border-t border-slate-800/60 hover:bg-slate-800/40"
+                    >
                       <td className="px-2 py-1 text-slate-300">{d.survey}</td>
                       <td className="px-2 py-1 font-mono text-[11px] text-slate-100">
                         {d.source_id ?? "—"}
-                        {d.name && d.name !== d.source_id && <span className="ml-1 text-slate-500">{d.name}</span>}
+                        {d.name && d.name !== d.source_id && (
+                          <span className="ml-1 text-slate-500">{d.name}</span>
+                        )}
                       </td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(d.separation_arcmin, 2)}</td>
+                      <td className="px-2 py-1 text-right font-mono text-[11px]">
+                        {num(d.separation_arcmin, 2)}
+                      </td>
                       <td className="px-2 py-1 text-right font-mono text-[11px]">
                         {num(d.velocity_kms, 0)}
-                        {d.velocity_err_kms !== null && <span className="text-slate-500"> ±{num(d.velocity_err_kms, 0)}</span>}
+                        {d.velocity_err_kms !== null && (
+                          <span className="text-slate-500">
+                            {" "}
+                            ±{num(d.velocity_err_kms, 0)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-2 py-1 text-right font-mono text-[11px]">
                         {num(d.w50_kms, 0)}
-                        {d.w50_err_kms !== null && <span className="text-slate-500"> ±{num(d.w50_err_kms, 0)}</span>}
+                        {d.w50_err_kms !== null && (
+                          <span className="text-slate-500">
+                            {" "}
+                            ±{num(d.w50_err_kms, 0)}
+                          </span>
+                        )}
                       </td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(d.w20_kms, 0)}</td>
+                      <td className="px-2 py-1 text-right font-mono text-[11px]">
+                        {num(d.w20_kms, 0)}
+                      </td>
                       <td className="px-2 py-1 text-right font-mono text-[11px]">
                         {num(d.flux_jy_kms, 2)}
-                        {d.flux_err_jy_kms !== null && <span className="text-slate-500"> ±{num(d.flux_err_jy_kms, 2)}</span>}
+                        {d.flux_err_jy_kms !== null && (
+                          <span className="text-slate-500">
+                            {" "}
+                            ±{num(d.flux_err_jy_kms, 2)}
+                          </span>
+                        )}
                       </td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(d.snr, 1)}</td>
-                      <td className="px-2 py-1 text-right font-mono text-[11px]">{num(d.log_mhi, 2)}</td>
+                      <td className="px-2 py-1 text-right font-mono text-[11px]">
+                        {num(d.snr, 1)}
+                      </td>
+                      <td className="px-2 py-1 text-right font-mono text-[11px]">
+                        {num(d.log_mhi, 2)}
+                      </td>
                       <td className="px-2 py-1">
                         {d.vizier_url && (
-                          <a href={d.vizier_url} target="_blank" rel="noreferrer" className="text-[11px] text-sky-300">
+                          <a
+                            href={d.vizier_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] text-sky-300"
+                          >
                             VizieR
                           </a>
                         )}

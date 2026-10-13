@@ -144,6 +144,14 @@ cube axes (FREQ, VRAD, VOPT) are handled; 4-D cubes use the first Stokes plane.
 
 ### Spectrum tab
 
+The left column lists everything that can be plotted for the current search: ALMA cubes
+("products" lists the spectral-window cubes of that observation, science cubes first with the
+window holding the chosen line marked), MUSE cubes ("extract" runs the SODA cutout), HI 21 cm
+catalogue detections ("template" draws a double-horn profile from Vsys, W50, W20 and flux) and
+an upload button for your own HI spectrum. Plotted traces sit at the top with a checkbox to
+hide each one. The "spectrum" buttons in the observation table do the same thing. HST and JWST
+products are not listed here because MAST offers no cutout service.
+
 Any number of traces (MUSE via SODA, ALMA via product cubes) can be overplotted. In velocity
 mode each optical trace is placed on a velocity axis about the chosen optical line (Hα by
 default, optical convention) and each radio trace about the chosen mm line (CO(2–1) by default,
@@ -216,7 +224,7 @@ is tested against faked service responses. The first live run should confirm:
    (`dbo.CaomObservation`) and the ALMA/ESO `INTERSECTS` support are the parts to confirm live.
 4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS detections for NGC 1365 (ALFALFA does
    not cover Dec −36).
-5. In the observation list, press "spectrum" on a public MUSE cube of NGC 1365: the Spectrum tab
+5. In the Spectrum tab's source column (or the observation list), extract a public MUSE cube of NGC 1365: the Spectrum tab
    should show a 4750–9350 Å spectrum with Hα, [NII] and [SII] marked near 6600 Å (verified live).
 6. With an ADS token set, the Literature tab lists several hundred refereed papers on NGC 1365
    with a year histogram; with a Gemini key, "synthesise" returns the structured briefing.
