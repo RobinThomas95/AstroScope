@@ -445,7 +445,7 @@ each service's own acknowledgement guidelines.
 
 ## Citing AstroScope
 
-Any scientific work that arises from AstroScope, whether a publication, a talk or a thesis,
+Any scientific work that arises from AstroScope, including but not limited to a publication, a talk or a thesis,
 should acknowledge this repository:
 
 > This research made use of AstroScope (https://github.com/RobinThomas95/AstroScope).
