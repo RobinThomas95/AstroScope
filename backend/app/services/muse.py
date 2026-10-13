@@ -126,28 +126,45 @@ class SodaCutoutClient:
 
 
 # -- extraction -----------------------------------------------------------------------------------
+def _ndim(hdu) -> int:
+    """Dimensionality from the header, without loading the data."""
+    try:
+        return int(hdu.header.get("NAXIS", 0)) if getattr(hdu, "is_image", False) else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _find_cube(hdul):
     """(data HDU, variance HDU or None) of a MUSE-style cube."""
     data_hdu = None
     for hdu in hdul:
         name = (hdu.name or "").upper()
-        if hdu.data is not None and getattr(hdu.data, "ndim", 0) in (3, 4) and name == "DATA":
+        if _ndim(hdu) in (3, 4) and name == "DATA":
             data_hdu = hdu
             break
     if data_hdu is None:
         for hdu in hdul:
-            if hdu.data is not None and getattr(hdu.data, "ndim", 0) in (3, 4):
+            if _ndim(hdu) in (3, 4):
                 data_hdu = hdu
                 break
     if data_hdu is None:
         raise ValueError("No 3-D data array found in the cutout")
     stat = None
     for hdu in hdul:
-        if (hdu.name or "").upper() in ("STAT", "VARIANCE", "VAR") and hdu.data is not None:
-            if hdu.data.shape == data_hdu.data.shape:
+        if (hdu.name or "").upper() in ("STAT", "VARIANCE", "VAR") and _ndim(hdu) > 0:
+            if tuple(hdu.shape) == tuple(data_hdu.shape):
                 stat = hdu
             break
     return data_hdu, stat
+
+
+def _read_box(hdu, key: tuple) -> np.ndarray:
+    """Read one sub-array of an image HDU, through `section` when the HDU is file-backed so a
+    multi-GB cube is never loaded whole."""
+    try:
+        return np.asarray(hdu.section[key], dtype=float)
+    except Exception:  # noqa: BLE001  (in-memory HDUs have no file section)
+        return np.asarray(hdu.data[key], dtype=float)
 
 
 def _spectral_axis_A(header, n: int) -> tuple[np.ndarray, list[str]]:
@@ -200,99 +217,118 @@ def _spectral_axis_A(header, n: int) -> tuple[np.ndarray, list[str]]:
 def extract_spectrum(
     fits_bytes: bytes, ra: float, dec: float, radius_arcsec: float, method: str = "sum"
 ) -> Spectrum1D:
-    import astropy.units as u
-    from astropy.coordinates import SkyCoord
     from astropy.io import fits
-    from astropy.wcs import WCS
-    from astropy.wcs.utils import proj_plane_pixel_scales
 
-    warnings: list[str] = []
     if fits_bytes[:2] == b"\x1f\x8b":  # gzipped FITS
         fits_bytes = gzip.decompress(fits_bytes)
     if not fits_bytes.startswith(b"SIMPLE"):
         head = fits_bytes[:120].decode("latin-1", "replace").strip()
         raise ValueError(f"Payload is not a FITS file (starts with: {head!r})")
     with fits.open(io.BytesIO(fits_bytes), memmap=False) as hdul:
-        data_hdu, stat_hdu = _find_cube(hdul)
-        cube = np.asarray(data_hdu.data, dtype=float)
-        var = np.asarray(stat_hdu.data, dtype=float) if stat_hdu is not None else None
-        header = data_hdu.header
-        if cube.ndim == 4:  # radio cubes carry a Stokes axis first: take Stokes I
-            cube = cube[0]
-            if var is not None and var.ndim == 4:
-                var = var[0]
-            warnings.append("4-D cube: used the first Stokes plane")
-        nz, ny, nx = cube.shape
-        wl, w_warn = _spectral_axis_A(header, nz)
-        warnings += w_warn
+        return extract_from_hdul(hdul, ra, dec, radius_arcsec, method=method)
 
-        # Aperture mask in pixel space.
-        try:
-            wcs = WCS(header).celestial
-            x0, y0 = wcs.world_to_pixel(SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"))
-            scales = proj_plane_pixel_scales(wcs) * 3600.0  # arcsec / pixel
-            pix_scale = float(np.mean(np.abs(scales)))
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"celestial WCS unavailable ({exc}); using the cutout centre")
-            x0, y0 = (nx - 1) / 2, (ny - 1) / 2
-            pix_scale = float(abs(header.get("CD2_2", header.get("CDELT2", 0.2 / 3600))) * 3600)
-        r_pix = radius_arcsec / pix_scale if pix_scale else 1.0
-        yy, xx = np.mgrid[0:ny, 0:nx]
-        mask = (xx - float(x0)) ** 2 + (yy - float(y0)) ** 2 <= r_pix**2
-        if not mask.any():
-            ix, iy = int(round(float(x0))), int(round(float(y0)))
-            ix, iy = min(max(ix, 0), nx - 1), min(max(iy, 0), ny - 1)
-            mask[iy, ix] = True
-            warnings.append("aperture smaller than a pixel; using the nearest spaxel")
-        n_spax = int(mask.sum())
 
-        sub = cube[:, mask]  # (nz, n_spax)
-        valid = np.isfinite(sub)
-        n_valid = valid.sum(axis=1)
-        summed = np.where(valid, sub, 0.0).sum(axis=1)
+def extract_from_hdul(
+    hdul, ra: float, dec: float, radius_arcsec: float, method: str = "sum"
+) -> Spectrum1D:
+    """Aperture spectrum from an open cube; only the pixel box around the aperture is read."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.wcs import WCS
+    from astropy.wcs.utils import proj_plane_pixel_scales
+
+    warnings: list[str] = []
+    data_hdu, stat_hdu = _find_cube(hdul)
+    header = data_hdu.header
+    shape = tuple(int(n) for n in data_hdu.shape)
+    stokes = len(shape) == 4  # radio cubes carry a Stokes axis first: take Stokes I
+    if stokes:
+        warnings.append("4-D cube: used the first Stokes plane")
+    nz, ny, nx = shape[-3:]
+    wl, w_warn = _spectral_axis_A(header, nz)
+    warnings += w_warn
+
+    # Aperture mask in pixel space.
+    try:
+        wcs = WCS(header).celestial
+        x0, y0 = wcs.world_to_pixel(SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"))
+        scales = proj_plane_pixel_scales(wcs) * 3600.0  # arcsec / pixel
+        pix_scale = float(np.mean(np.abs(scales)))
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"celestial WCS unavailable ({exc}); using the cutout centre")
+        x0, y0 = (nx - 1) / 2, (ny - 1) / 2
+        pix_scale = float(abs(header.get("CD2_2", header.get("CDELT2", 0.2 / 3600))) * 3600)
+    r_pix = radius_arcsec / pix_scale if pix_scale else 1.0
+    x0f, y0f = float(x0), float(y0)
+    # Pixel box around the aperture, clipped to the cube.
+    xa, xb = max(int(np.floor(x0f - r_pix)), 0), min(int(np.ceil(x0f + r_pix)) + 1, nx)
+    ya, yb = max(int(np.floor(y0f - r_pix)), 0), min(int(np.ceil(y0f + r_pix)) + 1, ny)
+    if xa >= xb or ya >= yb:  # aperture entirely outside: nearest edge pixel
+        xa, ya = min(max(int(round(x0f)), 0), nx - 1), min(max(int(round(y0f)), 0), ny - 1)
+        xb, yb = xa + 1, ya + 1
+    yy, xx = np.mgrid[ya:yb, xa:xb]
+    mask = (xx - x0f) ** 2 + (yy - y0f) ** 2 <= r_pix**2
+    if not mask.any():
+        ix, iy = int(round(x0f)), int(round(y0f))
+        ix, iy = min(max(ix, xa), xb - 1), min(max(iy, ya), yb - 1)
+        mask[iy - ya, ix - xa] = True
+        warnings.append("aperture smaller than a pixel; using the nearest spaxel")
+    n_spax = int(mask.sum())
+
+    key = (
+        (0, slice(None), slice(ya, yb), slice(xa, xb))
+        if stokes
+        else (slice(None), slice(ya, yb), slice(xa, xb))
+    )
+    cube = _read_box(data_hdu, key)
+    var = _read_box(stat_hdu, key) if stat_hdu is not None else None
+    sub = cube[:, mask]  # (nz, n_spax)
+    valid = np.isfinite(sub)
+    n_valid = valid.sum(axis=1)
+    summed = np.where(valid, sub, 0.0).sum(axis=1)
+    if method == "mean":
+        with np.errstate(invalid="ignore", divide="ignore"):
+            flux = np.where(n_valid > 0, summed / np.maximum(n_valid, 1), np.nan)
+    else:
+        flux = np.where(n_valid > 0, summed, np.nan)
+    error = None
+    if var is not None:
+        vsub = var[:, mask]
+        vvalid = np.isfinite(vsub) & valid
+        vsum = np.where(vvalid, vsub, 0.0).sum(axis=1)
+        err = np.sqrt(vsum)
         if method == "mean":
-            with np.errstate(invalid="ignore", divide="ignore"):
-                flux = np.where(n_valid > 0, summed / np.maximum(n_valid, 1), np.nan)
-        else:
-            flux = np.where(n_valid > 0, summed, np.nan)
-        error = None
-        if var is not None:
-            vsub = var[:, mask]
-            vvalid = np.isfinite(vsub) & valid
-            vsum = np.where(vvalid, vsub, 0.0).sum(axis=1)
-            err = np.sqrt(vsum)
-            if method == "mean":
-                err = err / np.maximum(n_valid, 1)
-            error = [None if not np.isfinite(e) else float(e) for e in err]
+            err = err / np.maximum(n_valid, 1)
+        error = [None if not np.isfinite(e) else float(e) for e in err]
 
-        unit = str(header.get("BUNIT", "")) or "unknown"
-        if method == "sum":
-            unit_out = unit
-        else:
-            unit_out = f"{unit} per spaxel"
+    unit = str(header.get("BUNIT", "")) or "unknown"
+    if method == "sum":
+        unit_out = unit
+    else:
+        unit_out = f"{unit} per spaxel"
 
-        source: dict[str, Any] = {
-            "object": header.get("OBJECT"),
-            "date_obs": header.get("DATE-OBS"),
-            "instrument": header.get("INSTRUME"),
-            "exptime": header.get("EXPTIME"),
-            "cutout_shape": f"{nz}x{ny}x{nx}",
-        }
-        return Spectrum1D(
-            wavelength_A=[float(x) for x in wl],
-            flux=[None if not np.isfinite(f) else float(f) for f in flux],
-            error=error,
-            flux_unit=unit_out,
-            method=method,
-            n_spaxels=n_spax,
-            aperture_radius_arcsec=radius_arcsec,
-            center_ra_deg=ra,
-            center_dec_deg=dec,
-            pixel_scale_arcsec=pix_scale,
-            n_channels=int(nz),
-            source=source,
-            warnings=warnings,
-        )
+    source: dict[str, Any] = {
+        "object": header.get("OBJECT"),
+        "date_obs": header.get("DATE-OBS"),
+        "instrument": header.get("INSTRUME"),
+        "exptime": header.get("EXPTIME"),
+        "cutout_shape": f"{nz}x{ny}x{nx}",
+    }
+    return Spectrum1D(
+        wavelength_A=[float(x) for x in wl],
+        flux=[None if not np.isfinite(f) else float(f) for f in flux],
+        error=error,
+        flux_unit=unit_out,
+        method=method,
+        n_spaxels=n_spax,
+        aperture_radius_arcsec=radius_arcsec,
+        center_ra_deg=ra,
+        center_dec_deg=dec,
+        pixel_scale_arcsec=pix_scale,
+        n_channels=int(nz),
+        source=source,
+        warnings=warnings,
+    )
 
 
 class MuseSpectrumService:

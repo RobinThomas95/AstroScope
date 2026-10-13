@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.schemas.spectra import Spectrum1D
-from app.services.muse import extract_spectrum
+from app.services.muse import extract_from_hdul
 
 log = logging.getLogger(__name__)
 
@@ -212,13 +213,34 @@ def frequency_axis_ghz(wavelength_A: list[float]) -> list[float | None]:
     return [C_KM_S * 1e3 / (w * 1e-10) / 1e9 if w and w > 0 else None for w in wavelength_A]
 
 
+def _plain_fits(path: Path) -> Path:
+    """Path of an uncompressed copy of a product (gunzipped once, next to it in the cache)."""
+    with open(path, "rb") as fh:
+        magic = fh.read(2)
+    if magic != b"\x1f\x8b":
+        return path
+    plain = path.with_name(path.name[:-3] if path.name.endswith(".gz") else path.name + ".fits")
+    if plain.exists() and plain.stat().st_size > 0:
+        return plain
+    tmp = plain.with_suffix(plain.suffix + ".part")
+    with gzip.open(path, "rb") as src, open(tmp, "wb") as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
+    tmp.replace(plain)
+    return plain
+
+
 def extract_from_file(
     path: Path, ra: float, dec: float, radius_arcsec: float, method: str = "sum"
 ) -> Spectrum1D:
-    data = path.read_bytes()
-    if data[:2] == b"\x1f\x8b":  # gzipped FITS (.fits.gz products)
-        data = gzip.decompress(data)
-    spec = extract_spectrum(data, ra, dec, radius_arcsec, method=method)
+    """Aperture spectrum from a product on disk: memory-mapped, only the aperture box is read."""
+    from astropy.io import fits
+
+    plain = _plain_fits(path)
+    with open(plain, "rb") as fh:
+        if fh.read(6) != b"SIMPLE":
+            raise ValueError(f"{path.name} is not a FITS file")
+    with fits.open(plain, memmap=True) as hdul:
+        spec = extract_from_hdul(hdul, ra, dec, radius_arcsec, method=method)
     spec.frequency_ghz = frequency_axis_ghz(spec.wavelength_A)
     spec.source["product"] = path.name.split("-", 1)[-1]
     return spec

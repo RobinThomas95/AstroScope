@@ -120,95 +120,110 @@ function productLabel(base: string, p: CubeProduct): string {
   return `${base} ${win}`;
 }
 
+export type ProductState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ok"; products: CubeProduct[] };
+
+function sourceKey(d: HIDetection): string {
+  return d.source_id ?? `${d.survey}:${d.name ?? ""}:${d.velocity_kms ?? ""}`;
+}
+
+/** "contains line" from the product's window and the chosen line, recomputed client-side so a
+ * change of line does not need a new DataLink call. */
+function containsLine(p: CubeProduct, lineGhz: number | null): boolean | null {
+  if (lineGhz !== null && p.freq_min_ghz !== null && p.freq_max_ghz !== null)
+    return p.freq_min_ghz <= lineGhz && p.freq_max_ghz >= lineGhz;
+  return p.contains_line;
+}
+
 const PRODUCT_KIND_LABEL: Record<string, string> = {
-  cube: "Science cubes",
-  auxiliary: "Auxiliary cubes (mask, primary beam, psf, residual…)",
-  calibrator: "Calibrator cubes (check source, phase, bandpass…)",
+  cube: "science cubes",
+  auxiliary: "auxiliary (mask, pb, psf, residual…)",
+  calibrator: "calibrator (check, phase, bandpass…)",
 };
 
-function ProductList({
-  products,
-  request,
+/** Compact product rows for the source column. */
+function ProductRows({
+  state,
+  lineGhz,
   onExtract,
 }: {
-  products: CubeProduct[];
-  request: SpectrumRequest;
+  state: ProductState;
+  lineGhz: number | null;
   onExtract: (p: CubeProduct) => void;
 }) {
   const [showAll, setShowAll] = useState(false);
+  if (state.status === "loading")
+    return <p className="pl-4 text-slate-500">listing products…</p>;
+  if (state.status === "error")
+    return <p className="pl-4 text-rose-300">{state.message}</p>;
+  const products = state.products;
   const science = products.filter((p) => p.kind === "cube");
   const auxiliary = products.filter((p) => p.kind === "auxiliary");
   const calibrator = products.filter((p) => p.kind === "calibrator");
   const packages = products.filter((p) => p.kind === "package");
-  const others =
-    products.length -
-    science.length -
-    auxiliary.length -
-    calibrator.length -
-    packages.length;
+  const hidden = auxiliary.length + calibrator.length;
   const groups: [string, CubeProduct[]][] = [["cube", science]];
   if (showAll || science.length === 0)
     groups.push(["auxiliary", auxiliary], ["calibrator", calibrator]);
-  const hidden = auxiliary.length + calibrator.length;
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5 pl-4">
       {science.length === 0 && (
         <p className="text-amber-300">
-          No science cube (pbcor/image) is listed for {request.label}.
+          No science cube listed.
           {hidden > 0 &&
-            ` ${hidden} auxiliary or calibrator cube${hidden === 1 ? "" : "s"} listed below can still be extracted but are not the target's flux.`}
+            ` ${hidden} auxiliary/calibrator cube${hidden === 1 ? "" : "s"} below (not the target's flux).`}
           {packages.length > 0 &&
-            ` ${packages.length} packaged tar product${packages.length === 1 ? "" : "s"} listed (not extractable here; download from the ALMA archive).`}
-          {others > 0 &&
-            ` ${others} other FITS file${others === 1 ? "" : "s"}.`}
+            ` ${packages.length} tar package${packages.length === 1 ? "" : "s"} only downloadable from the archive.`}
+          {products.length === 0 && " DataLink listed no files."}
         </p>
       )}
       {groups.map(([kind, list]) =>
         list.length === 0 ? null : (
           <div key={kind}>
-            <p className="text-[11px] uppercase tracking-wide text-slate-500">
+            <p className="text-[10px] uppercase tracking-wide text-slate-600">
               {PRODUCT_KIND_LABEL[kind]}
             </p>
             <ul className="space-y-0.5">
-              {list.slice(0, 24).map((p) => (
-                <li key={p.url} className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`rounded px-1 ${p.contains_line ? "bg-emerald-900/50 text-emerald-300" : "bg-slate-800 text-slate-400"}`}
-                    title={
-                      p.freq_approx
-                        ? "window estimated from the centre frequency in the file name"
-                        : undefined
-                    }
+              {list.slice(0, 24).map((p) => {
+                const has = containsLine(p, lineGhz);
+                return (
+                  <li
+                    key={p.url}
+                    className="flex items-center gap-1"
+                    title={`${p.name}${p.freq_min_ghz ? ` · ${p.freq_min_ghz.toFixed(2)}–${p.freq_max_ghz?.toFixed(2)} GHz${p.freq_approx ? " (estimated window)" : ""}` : ""}`}
                   >
-                    {p.contains_line
-                      ? "contains line"
-                      : p.contains_line === false
-                        ? "other window"
-                        : "window ?"}
-                    {p.freq_approx && p.contains_line !== null ? " ~" : ""}
-                  </span>
-                  <span className="font-mono text-[11px] text-slate-200">
-                    {p.name}
-                  </span>
-                  <span className="text-slate-500">
-                    spw {p.spw ?? "?"}
-                    {p.freq_center_ghz
-                      ? ` · ${p.freq_center_ghz.toFixed(3)} GHz`
-                      : ""}
-                    {p.freq_min_ghz
-                      ? ` · ${p.freq_min_ghz.toFixed(2)}–${p.freq_max_ghz?.toFixed(2)} GHz${p.freq_approx ? " (est.)" : ""}`
-                      : ""}{" "}
-                    · {p.size_mb ?? "?"} MB
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onExtract(p)}
-                    className="rounded border border-emerald-700 px-1.5 py-0.5 text-emerald-300 hover:bg-emerald-900/40"
-                  >
-                    extract
-                  </button>
-                </li>
-              ))}
+                    <span
+                      className={`shrink-0 rounded px-1 text-[10px] ${has ? "bg-emerald-900/50 text-emerald-300" : "bg-slate-800 text-slate-400"}`}
+                    >
+                      {has ? "line" : has === false ? "other" : "?"}
+                      {p.freq_approx && has !== null ? "~" : ""}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-slate-300">
+                      spw{p.spw ?? "?"}
+                      {p.freq_center_ghz
+                        ? ` · ${p.freq_center_ghz.toFixed(2)} GHz`
+                        : p.freq_min_ghz
+                          ? ` · ${p.freq_min_ghz.toFixed(1)}–${p.freq_max_ghz?.toFixed(1)}`
+                          : ""}{" "}
+                      ·{" "}
+                      {p.size_mb
+                        ? p.size_mb >= 1000
+                          ? `${(p.size_mb / 1000).toFixed(1)} GB`
+                          : `${Math.round(p.size_mb)} MB`
+                        : "? MB"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onExtract(p)}
+                      className="shrink-0 rounded border border-emerald-700 px-1 py-px text-[10px] text-emerald-300 hover:bg-emerald-900/40"
+                    >
+                      extract
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ),
@@ -217,15 +232,16 @@ function ProductList({
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
-          className="text-slate-400 underline hover:text-slate-200"
+          className="text-[10px] text-slate-500 underline hover:text-slate-300"
         >
-          {showAll ? "hide" : "show"} {hidden} auxiliary/calibrator cube
-          {hidden === 1 ? "" : "s"}
+          {showAll ? "hide" : "show"} {hidden} auxiliary/calibrator
         </button>
       )}
     </div>
   );
 }
+
+type Group = "alma" | "muse" | "hi";
 
 interface SourceColumnProps {
   observations: ArchiveObservation[];
@@ -241,68 +257,82 @@ interface SourceColumnProps {
   hiSource: string | null;
   onHITemplate: (d: HIDetection) => void;
   onUpload: (file: File | undefined) => void;
+  productsByObs: Record<string, ProductState>;
+  expandedAlma: Set<string>;
+  onToggleAlma: (req: SpectrumRequest) => void;
+  onExtractProduct: (req: SpectrumRequest, p: CubeProduct) => void;
+  lineGhz: number | null;
+  lineName: string;
+  radioLines: RadioLine[];
+  refRadio: string;
+  onRefRadio: (name: string) => void;
 }
 
-function sourceKey(d: HIDetection): string {
-  return d.source_id ?? `${d.survey}:${d.name ?? ""}:${d.velocity_kms ?? ""}`;
-}
-
-/** Left column of the Spectrum tab: everything that can be plotted, grouped by source. */
+/** Left column of the Spectrum tab: everything that can be plotted, grouped by source like the
+ * observation table. Groups open on click; an ALMA cube opens to its spectral-window products. */
 function SourceColumn(p: SourceColumnProps) {
+  const [open, setOpen] = useState<Set<Group>>(new Set());
+  const toggle = (g: Group) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(g)) next.delete(g);
+      else next.add(g);
+      return next;
+    });
   const alma = p.observations.filter(
     (o) => toSpectrumRequest(o)?.kind === "alma",
   );
   const muse = p.observations.filter(
     (o) => toSpectrumRequest(o)?.kind === "muse",
   );
-  const heading = (text: string, count: number) => (
-    <p className="mt-2 flex items-center gap-1 text-[11px] uppercase tracking-wide text-slate-500">
-      {text} <span className="text-slate-600">{count}</span>
-    </p>
+  const groupHeader = (
+    g: Group,
+    text: string,
+    count: number,
+    pending: boolean,
+  ) => (
+    <button
+      type="button"
+      onClick={() => toggle(g)}
+      className="mt-2 flex w-full items-center gap-1 rounded px-1 text-left text-[11px] uppercase tracking-wide text-slate-400 hover:bg-slate-800/60"
+      aria-expanded={open.has(g)}
+    >
+      <span className="w-3 text-slate-500">{open.has(g) ? "▾" : "▸"}</span>
+      <span className="text-slate-300">{text}</span>
+      <span className="text-slate-600">{pending ? "…" : count}</span>
+    </button>
   );
-  const obsRow = (o: ArchiveObservation, action: string) => {
-    const req = toSpectrumRequest(o) as SpectrumRequest;
-    const selected = p.current?.datalinkUrl === req.datalinkUrl;
-    return (
-      <li
-        key={req.datalinkUrl}
-        className={`rounded px-1 py-0.5 ${selected ? "bg-slate-800/80" : "hover:bg-slate-800/40"}`}
+  const obsHeader = (o: ArchiveObservation) => (
+    <>
+      <span
+        className="min-w-0 flex-1 truncate text-slate-200"
+        title={observationLabel(o)}
       >
-        <div className="flex items-center gap-1">
-          <span
-            className="min-w-0 flex-1 truncate text-slate-200"
-            title={observationLabel(o)}
-          >
-            {(o.obs_id ?? "").replace(/^uid:\/\//, "") || o.target_name || "—"}
-          </span>
-          <button
-            type="button"
-            onClick={() => p.onSelect(req)}
-            className="shrink-0 rounded border border-emerald-700 px-1 py-px text-[10px] text-emerald-300 hover:bg-emerald-900/40"
-          >
-            {action}
-          </button>
-        </div>
-        <div className="flex flex-wrap gap-x-1 text-[10px] text-slate-500">
-          <span>{o.date_obs?.slice(0, 10) ?? "no date"}</span>
-          {o.separation_arcmin !== null && (
-            <span>· {o.separation_arcmin.toFixed(1)}′</span>
-          )}
-          {o.covers_target === false && (
-            <span className="text-amber-400">· outside footprint</span>
-          )}
-          {o.covers_target === true && (
-            <span className="text-emerald-400">· covers target</span>
-          )}
-        </div>
-      </li>
-    );
-  };
+        {(o.obs_id ?? "").replace(/^uid:\/\//, "") || o.target_name || "—"}
+      </span>
+    </>
+  );
+  const obsMeta = (o: ArchiveObservation) => (
+    <div className="flex flex-wrap gap-x-1 text-[10px] text-slate-500">
+      <span>{o.date_obs?.slice(0, 10) ?? "no date"}</span>
+      {o.separation_arcmin !== null && (
+        <span>· {o.separation_arcmin.toFixed(1)}′</span>
+      )}
+      {o.covers_target === false && (
+        <span className="text-amber-400">· outside footprint</span>
+      )}
+      {o.covers_target === true && (
+        <span className="text-emerald-400">· covers target</span>
+      )}
+    </div>
+  );
   return (
-    <div className="flex w-56 shrink-0 flex-col text-xs">
+    <div className="flex w-72 shrink-0 flex-col text-xs">
       {p.traces.length > 0 && (
         <>
-          {heading("Plotted", p.traces.length)}
+          <p className="mt-2 flex items-center gap-1 px-1 text-[11px] uppercase tracking-wide text-slate-500">
+            Plotted <span className="text-slate-600">{p.traces.length}</span>
+          </p>
           <ul className="space-y-0.5">
             {p.traces.map((t) => (
               <li
@@ -339,7 +369,7 @@ function SourceColumn(p: SourceColumnProps) {
         </>
       )}
       {!p.searched ? (
-        <p className="mt-2 text-slate-500">
+        <p className="mt-2 px-1 text-slate-500">
           Spectra come from the archive search.{" "}
           <button
             type="button"
@@ -351,83 +381,183 @@ function SourceColumn(p: SourceColumnProps) {
         </p>
       ) : (
         <>
-          {heading("ALMA cubes", alma.length)}
-          {p.searching && alma.length === 0 && (
-            <p className="text-slate-600">querying…</p>
+          {groupHeader(
+            "alma",
+            "ALMA cubes",
+            alma.length,
+            p.searching && alma.length === 0,
           )}
-          {!p.searching && alma.length === 0 && (
-            <p className="text-slate-600">none public in the search radius</p>
+          {open.has("alma") && (
+            <div className="pl-1">
+              <div className="flex flex-wrap items-center gap-1 py-0.5 text-[10px] text-slate-500">
+                line
+                <select
+                  value={p.refRadio}
+                  onChange={(e) => p.onRefRadio(e.target.value)}
+                  className="rounded border border-slate-700 bg-slate-950 px-1 py-px text-slate-200"
+                  aria-label="Radio line"
+                >
+                  {p.radioLines.map((l) => (
+                    <option key={l.name} value={l.name}>
+                      {l.name}
+                    </option>
+                  ))}
+                  {!p.radioLines.length && (
+                    <option value="CO(2-1)">CO(2-1)</option>
+                  )}
+                </select>
+                {p.lineGhz !== null ? (
+                  <span>{p.lineGhz.toFixed(3)} GHz observed</span>
+                ) : (
+                  <span className="text-amber-400">
+                    enter cz to place {p.lineName}
+                  </span>
+                )}
+              </div>
+              {!p.searching && alma.length === 0 && (
+                <p className="text-slate-600">
+                  none public in the search radius
+                </p>
+              )}
+              <ul className="space-y-0.5">
+                {alma.map((o) => {
+                  const req = toSpectrumRequest(o) as SpectrumRequest;
+                  const expanded = p.expandedAlma.has(req.datalinkUrl);
+                  const selected = p.current?.datalinkUrl === req.datalinkUrl;
+                  return (
+                    <li
+                      key={req.datalinkUrl}
+                      className={`rounded px-1 py-0.5 ${selected ? "bg-slate-800/80" : "hover:bg-slate-800/40"}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => p.onToggleAlma(req)}
+                        className="flex w-full items-center gap-1 text-left"
+                        aria-expanded={expanded}
+                      >
+                        <span className="w-3 text-slate-500">
+                          {expanded ? "▾" : "▸"}
+                        </span>
+                        {obsHeader(o)}
+                      </button>
+                      <div className="pl-4">{obsMeta(o)}</div>
+                      {expanded && (
+                        <ProductRows
+                          state={
+                            p.productsByObs[req.datalinkUrl] ?? {
+                              status: "loading",
+                            }
+                          }
+                          lineGhz={p.lineGhz}
+                          onExtract={(prod) => p.onExtractProduct(req, prod)}
+                        />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
-          <ul className="space-y-0.5">
-            {alma.map((o) => obsRow(o, "products"))}
-          </ul>
-          {heading("MUSE cubes", muse.length)}
-          {p.searching && muse.length === 0 && (
-            <p className="text-slate-600">querying…</p>
+          {groupHeader(
+            "muse",
+            "MUSE cubes",
+            muse.length,
+            p.searching && muse.length === 0,
           )}
-          {!p.searching && muse.length === 0 && (
-            <p className="text-slate-600">none public in the search radius</p>
+          {open.has("muse") && (
+            <div className="pl-1">
+              {!p.searching && muse.length === 0 && (
+                <p className="text-slate-600">
+                  none public in the search radius
+                </p>
+              )}
+              <ul className="space-y-0.5">
+                {muse.map((o) => {
+                  const req = toSpectrumRequest(o) as SpectrumRequest;
+                  const selected = p.current?.datalinkUrl === req.datalinkUrl;
+                  return (
+                    <li
+                      key={req.datalinkUrl}
+                      className={`rounded px-1 py-0.5 ${selected ? "bg-slate-800/80" : "hover:bg-slate-800/40"}`}
+                    >
+                      <div className="flex items-center gap-1">
+                        {obsHeader(o)}
+                        <button
+                          type="button"
+                          onClick={() => p.onSelect(req)}
+                          className="shrink-0 rounded border border-emerald-700 px-1 py-px text-[10px] text-emerald-300 hover:bg-emerald-900/40"
+                        >
+                          extract
+                        </button>
+                      </div>
+                      {obsMeta(o)}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
-          <ul className="space-y-0.5">
-            {muse.map((o) => obsRow(o, "extract"))}
-          </ul>
         </>
       )}
-      {heading("HI 21 cm", p.hiDetections.length)}
-      {p.hiDetections.length === 0 && (
-        <p className="text-slate-600">no catalogue detection</p>
+      {groupHeader("hi", "HI 21 cm", p.hiDetections.length, false)}
+      {open.has("hi") && (
+        <div className="pl-1">
+          {p.hiDetections.length === 0 && (
+            <p className="text-slate-600">no catalogue detection</p>
+          )}
+          <ul className="space-y-0.5">
+            {p.hiDetections.map((d) => {
+              const key = sourceKey(d);
+              const selected = p.hiSource === key;
+              return (
+                <li
+                  key={key}
+                  className={`rounded px-1 py-0.5 ${selected ? "bg-slate-800/80" : "hover:bg-slate-800/40"}`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span
+                      className="min-w-0 flex-1 truncate text-slate-200"
+                      title={`${d.survey} ${d.name ?? d.source_id ?? ""}`}
+                    >
+                      {d.survey} {d.name ?? d.source_id ?? ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => p.onHITemplate(d)}
+                      className="shrink-0 rounded border border-amber-700 px-1 py-px text-[10px] text-amber-300 hover:bg-amber-900/40"
+                      title="Double-horn template from the catalogue Vsys, W50, W20 and flux"
+                    >
+                      template
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-slate-500">
+                    {d.velocity_kms !== null
+                      ? `cz ${d.velocity_kms.toFixed(0)} km/s`
+                      : "no velocity"}
+                    {d.w50_kms !== null ? ` · W50 ${d.w50_kms.toFixed(0)}` : ""}
+                    {d.flux_jy_kms !== null
+                      ? ` · ${d.flux_jy_kms.toFixed(1)} Jy km/s`
+                      : ""}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <label
+            className="mt-1 inline-block cursor-pointer rounded border border-slate-700 px-1.5 py-0.5 text-slate-300 hover:bg-slate-800"
+            title="Two-column ASCII: velocity (km/s), flux"
+          >
+            upload HI spectrum
+            <input
+              type="file"
+              accept=".txt,.dat,.csv,.asc,.tsv"
+              className="hidden"
+              onChange={(e) => p.onUpload(e.target.files?.[0])}
+            />
+          </label>
+        </div>
       )}
-      <ul className="space-y-0.5">
-        {p.hiDetections.map((d) => {
-          const key = sourceKey(d);
-          const selected = p.hiSource === key;
-          return (
-            <li
-              key={key}
-              className={`rounded px-1 py-0.5 ${selected ? "bg-slate-800/80" : "hover:bg-slate-800/40"}`}
-            >
-              <div className="flex items-center gap-1">
-                <span
-                  className="min-w-0 flex-1 truncate text-slate-200"
-                  title={`${d.survey} ${d.name ?? d.source_id ?? ""}`}
-                >
-                  {d.survey} {d.name ?? d.source_id ?? ""}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => p.onHITemplate(d)}
-                  className="shrink-0 rounded border border-amber-700 px-1 py-px text-[10px] text-amber-300 hover:bg-amber-900/40"
-                  title="Double-horn template from the catalogue Vsys, W50, W20 and flux"
-                >
-                  template
-                </button>
-              </div>
-              <div className="text-[10px] text-slate-500">
-                {d.velocity_kms !== null
-                  ? `cz ${d.velocity_kms.toFixed(0)} km/s`
-                  : "no velocity"}
-                {d.w50_kms !== null ? ` · W50 ${d.w50_kms.toFixed(0)}` : ""}
-                {d.flux_jy_kms !== null
-                  ? ` · ${d.flux_jy_kms.toFixed(1)} Jy km/s`
-                  : ""}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      <label
-        className="mt-1 cursor-pointer self-start rounded border border-slate-700 px-1.5 py-0.5 text-slate-300 hover:bg-slate-800"
-        title="Two-column ASCII: velocity (km/s), flux"
-      >
-        upload HI spectrum
-        <input
-          type="file"
-          accept=".txt,.dat,.csv,.asc,.tsv"
-          className="hidden"
-          onChange={(e) => p.onUpload(e.target.files?.[0])}
-        />
-      </label>
-      <p className="mt-2 text-[10px] text-slate-600">
+      <p className="mt-2 px-1 text-[10px] text-slate-600">
         HST and JWST products stay in the observation list: MAST offers no
         cutout service for them.
       </p>
@@ -471,8 +601,10 @@ export default function SpectrumPanel({
   const [hiProfile, setHIProfile] = useState<HIProfile | null>(null);
   const [hiError, setHIError] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<UploadedHI | null>(null);
-  const [products, setProducts] = useState<CubeProduct[] | null>(null);
-  const [productsFor, setProductsFor] = useState<SpectrumRequest | null>(null);
+  const [productsByObs, setProductsByObs] = useState<
+    Record<string, ProductState>
+  >({});
+  const [expandedAlma, setExpandedAlma] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -513,8 +645,8 @@ export default function SpectrumPanel({
   useEffect(() => {
     setTraces([]);
     setCurrent(null);
-    setProducts(null);
-    setProductsFor(null);
+    setProductsByObs({});
+    setExpandedAlma(new Set());
     setHIProfile(null);
     setHISource(null);
     setUploaded(null);
@@ -522,7 +654,10 @@ export default function SpectrumPanel({
   }, [target]);
 
   useEffect(() => {
-    const id = setTimeout(() => globalThis.dispatchEvent(new Event("resize")), 50);
+    const id = setTimeout(
+      () => globalThis.dispatchEvent(new Event("resize")),
+      50,
+    );
     return () => clearTimeout(id);
   }, [sourcesOpen]);
 
@@ -602,33 +737,55 @@ export default function SpectrumPanel({
     [extractPosition, radius, method, addTrace],
   );
 
+  /** Load the DataLink products of an ALMA cube into the source column (once per cube). */
   const listAlmaProducts = useCallback(
-    async (req: SpectrumRequest) => {
-      abortRef.current?.abort();
-      const ac = new AbortController();
-      abortRef.current = ac;
-      setLoading(`Listing the products of ${req.label}…`);
-      setError(null);
+    async (req: SpectrumRequest, force = false) => {
+      setExpandedAlma((prev) => new Set(prev).add(req.datalinkUrl));
+      if (!force && productsRef.current[req.datalinkUrl]?.status === "ok")
+        return;
+      setProductsByObs((prev) => ({
+        ...prev,
+        [req.datalinkUrl]: { status: "loading" },
+      }));
       try {
-        const lineGhz = referenceRadio?.observed_frequency_ghz ?? null;
         const list = await fetchCubeProducts(
           req.datalinkUrl,
           req.spwRanges,
-          lineGhz,
-          ac.signal,
+          null,
         );
-        if (!ac.signal.aborted) {
-          setProducts(list);
-          setProductsFor(req);
-        }
+        setProductsByObs((prev) => ({
+          ...prev,
+          [req.datalinkUrl]: { status: "ok", products: list },
+        }));
       } catch (e: unknown) {
-        if (!ac.signal.aborted)
-          setError(e instanceof ApiError ? e.message : String(e));
-      } finally {
-        if (!ac.signal.aborted) setLoading(null);
+        setProductsByObs((prev) => ({
+          ...prev,
+          [req.datalinkUrl]: {
+            status: "error",
+            message: e instanceof ApiError ? e.message : String(e),
+          },
+        }));
       }
     },
-    [referenceRadio],
+    [],
+  );
+  const productsRef = useRef(productsByObs);
+  productsRef.current = productsByObs;
+
+  const toggleAlma = useCallback(
+    (req: SpectrumRequest) => {
+      if (expandedAlma.has(req.datalinkUrl)) {
+        setExpandedAlma((prev) => {
+          const next = new Set(prev);
+          next.delete(req.datalinkUrl);
+          return next;
+        });
+      } else {
+        setCurrent(req);
+        void listAlmaProducts(req);
+      }
+    },
+    [expandedAlma, listAlmaProducts],
   );
 
   const extractAlma = useCallback(
@@ -1033,6 +1190,18 @@ export default function SpectrumPanel({
             hiSource={hiSource}
             onHITemplate={loadHITemplate}
             onUpload={(f) => void onUpload(f)}
+            productsByObs={productsByObs}
+            expandedAlma={expandedAlma}
+            onToggleAlma={toggleAlma}
+            onExtractProduct={(req, prod) => {
+              setCurrent(req);
+              void extractAlma(req, prod, position);
+            }}
+            lineGhz={referenceRadio?.observed_frequency_ghz ?? null}
+            lineName={referenceRadio?.name ?? refRadio}
+            radioLines={radioLines}
+            refRadio={refRadio}
+            onRefRadio={setRefRadio}
           />
         )}
       </div>
@@ -1126,42 +1295,6 @@ export default function SpectrumPanel({
             <option value="mean">mean per spaxel</option>
           </select>
         </div>
-
-        {products && productsFor && (
-          <div className="rounded border border-slate-800 bg-slate-950/60 p-2">
-            <p className="mb-1 text-slate-300">
-              Cube products of {productsFor.label}. Line:{" "}
-              {referenceRadio?.name ?? "CO(2-1)"}
-              {referenceRadio?.observed_frequency_ghz
-                ? ` at ${referenceRadio.observed_frequency_ghz.toFixed(3)} GHz observed`
-                : ""}
-              .
-              <select
-                value={refRadio}
-                onChange={(e) => setRefRadio(e.target.value)}
-                className="ml-2 rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-slate-200"
-                aria-label="Radio line"
-              >
-                {radioLines.map((l) => (
-                  <option key={l.name} value={l.name}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
-            </p>
-            {cz === null && (
-              <p className="text-amber-300">
-                Systemic velocity unknown (resolver and HI catalogues gave
-                none): enter cz below to mark the window containing the line.
-              </p>
-            )}
-            <ProductList
-              products={products}
-              request={productsFor}
-              onExtract={(p) => void extractAlma(productsFor, p, position)}
-            />
-          </div>
-        )}
 
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1 text-slate-300">

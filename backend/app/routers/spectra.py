@@ -172,7 +172,7 @@ async def cube_spectrum(
     dec: float = Query(..., ge=-90.0, le=90.0),
     radius_arcsec: float = Query(3.0, gt=0.0, le=60.0),
     method: str = Query("sum", pattern="^(sum|mean)$"),
-    max_mb: float | None = Query(None, gt=0, le=5000, description="Override the download cap"),
+    max_mb: float | None = Query(None, gt=0, le=200_000, description="Override the download cap"),
 ) -> Spectrum1D:
     """Download a cube product (cached on disk) and extract an aperture spectrum."""
     if not cubes._allowed(product_url):
