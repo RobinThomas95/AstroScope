@@ -1331,6 +1331,12 @@ export default function SpectrumPanel({
       shapes,
       annotations,
       hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "#0f172a",
+        bordercolor: "#475569",
+        font: { color: "#e2e8f0", size: 11 },
+        align: "left",
+      },
     };
     if (hasY2) {
       const radioUnit =

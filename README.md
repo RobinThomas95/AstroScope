@@ -353,9 +353,32 @@ for a day, so a transient CDS outage clears itself. The MUSE and ALMA footprint 
 the archive search to have run first.
 
 **An archive reports an error or times out.** The chip on the Archive tab names the archive and
-the message. MAST is slow for famous targets; raise `ASTROSCOPE_REMOTE_TIMEOUT` if it times out
-regularly. `backend/scripts/archive_diag.py` runs the three queries from the command line and
+the message. `backend/scripts/archive_diag.py` runs the three queries from the command line and
 prints what each service returns.
+
+**MAST fails, fully or partially.** This is the archive that fails most often and it is not an
+AstroScope fault: the MAST TAP service is slow for well-studied galaxies and sometimes drops a
+query. AstroScope asks it for HST and JWST separately, so a partial failure shows one of the two
+missing (the chip then reads "ok" with a note) and a full failure shows the MAST chip red while
+ESO and ALMA still list normally. What to do:
+
+1. Press **Search** again; most MAST failures are transient and the second run succeeds.
+2. If it keeps failing, open a second terminal and run the query on its own to see MAST's
+   answer (the first two numbers are the RA and Dec of the target in degrees, the third the
+   radius in arcminutes):
+
+   ```bash
+   .venv/bin/python backend/scripts/archive_diag.py 53.4015 -36.1404 5
+   ```
+
+   A timeout here means MAST itself is slow at the moment; raise `ASTROSCOPE_REMOTE_TIMEOUT` in
+   `.env` (MAST already gets several times that value) and restart the backend. An HTTP error
+   or a message about tables means the MAST service changed; add `--mast-schema` to the command
+   to list the tables it currently exposes, and set `ASTROSCOPE_MAST_TAP_URL` if a different
+   endpoint answers.
+3. The rest of AstroScope does not depend on MAST: the ESO, ALMA, HI and Spectrum features work
+   while MAST is down, and the HST and JWST coverage overlays in the viewer come from CDS, not
+   from MAST.
 
 **"SODA returned no data (HTTP 204)".** The aperture lies outside that cube's footprint or, for
 ALMA, outside its spectral range. Extract at the cube centre, choose a cube marked "covers
