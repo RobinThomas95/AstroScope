@@ -272,6 +272,14 @@ interface SourceColumnProps {
  * observation table. Groups open on click; an ALMA cube opens to its spectral-window products. */
 function SourceColumn(p: SourceColumnProps) {
   const [open, setOpen] = useState<Set<Group>>(new Set());
+  // A selection made elsewhere (observation table, HI template) opens its group here.
+  const currentKind = p.current?.kind ?? null;
+  useEffect(() => {
+    if (currentKind) setOpen((prev) => new Set(prev).add(currentKind));
+  }, [currentKind, p.current]);
+  useEffect(() => {
+    if (p.hiSource) setOpen((prev) => new Set(prev).add("hi"));
+  }, [p.hiSource]);
   const toggle = (g: Group) =>
     setOpen((prev) => {
       const next = new Set(prev);
@@ -845,6 +853,7 @@ export default function SpectrumPanel({
     (req: SpectrumRequest) => {
       if (!target) return;
       setCurrent(req);
+      setSourcesOpen(true);
       const pos: "target" | "cube" =
         req.coversTarget === false && req.cubeRa !== null ? "cube" : "target";
       setPosition(pos);
