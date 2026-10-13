@@ -134,20 +134,24 @@ profile can be uploaded in the UI as a two-column (velocity, flux) text file.
 
 ### `GET /api/cubes/products` and `GET /api/spectrum/cube` (ALMA)
 
-ALMA has no SODA cutout service, so for an ALMA observation the backend lists the FITS cube
-products in its DataLink document (one per spectral window), marks the window that contains the
-chosen line at the target's redshift, downloads the selected product as a background job the
-browser polls (progress bar with MB downloaded) and extracts the same aperture spectrum,
-returning a frequency axis as well. The product is memory-mapped and only the pixel box around
-the aperture is read, so multi-GB cubes do not need RAM; gzipped products are unpacked once.
-Frequency and velocity cube axes (FREQ, VRAD, VOPT) are handled; 4-D cubes use the first Stokes
-plane.
+For an ALMA observation the backend lists the FITS cube products in its DataLink document (one
+per spectral window; the contents of tar packages are listed through ALMA's nested DataLink
+documents, as `astroquery.alma.get_data_info(expand_tarfiles=True)` does), marks the window that
+contains the chosen line at the target's redshift, and extracts the same aperture spectrum with
+a frequency axis. Extraction runs as a background job the browser polls. It first asks the ALMA
+**SODA** service (`https://almascience.eso.org/soda/sync?REQUEST=queryData&ID=<product>&POS=CIRCLE
+...&BAND=<metres>`, the product's own mirror first, then the others) for an aperture cutout
+spanning the chosen line ± twice the velocity window: a few MB, seconds, nothing on disk. Only
+when no mirror serves a cutout does it download the full product (progress bar with MB
+downloaded), memory-map it and read just the pixel box around the aperture; gzipped products are
+unpacked once. Frequency and velocity cube axes (FREQ, VRAD, VOPT) are handled; 4-D cubes use
+the first Stokes plane. The footnote under the plot says which path was used.
 
-Downloaded ALMA cubes are the only thing written to disk (MUSE cutouts and every spectrum stay
-in memory). They are kept in a cache so a second extraction from the same cube is instant:
+Fully downloaded ALMA cubes are the only thing written to disk (SODA cutouts, MUSE cutouts and
+every spectrum stay in memory). They are kept in a cache so a second extraction is instant:
 `ASTROSCOPE_CUBE_CACHE_DIR` (default `<system temp>/astroscope-cubes`), the oldest files are
-deleted once it exceeds `ASTROSCOPE_CUBE_CACHE_GB` (default 4 GB), and the Spectrum tab shows
-the usage with a "clear" link (`GET`/`DELETE /api/cubes/cache`). The server-side download cap
+deleted once it exceeds `ASTROSCOPE_CUBE_CACHE_GB` (default 4 GB), and the Spectrum tab header
+shows the usage with a "clear cache" button (`GET`/`DELETE /api/cubes/cache`). The server-side download cap
 `ASTROSCOPE_CUBE_MAX_MB` (default 600 MB) is overridden per request by the product's own size.
 `GET /api/lines/radio` lists common mm lines (CO, 13CO, HCN, HCO+, [CI], ...) redshifted.
 

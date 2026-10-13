@@ -384,7 +384,7 @@ export interface LlmModels {
 
 export interface CubeJobStatus {
   job_id: string;
-  state: "queued" | "downloading" | "extracting" | "done" | "error";
+  state: "queued" | "cutout" | "downloading" | "extracting" | "done" | "error";
   downloaded_mb: number;
   total_mb: number | null;
   message: string | null;

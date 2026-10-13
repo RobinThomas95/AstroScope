@@ -180,13 +180,27 @@ async def cube_spectrum(
     radius_arcsec: float = Query(3.0, gt=0.0, le=60.0),
     method: str = Query("sum", pattern="^(sum|mean)$"),
     max_mb: float | None = Query(None, gt=0, le=200_000, description="Override the download cap"),
+    fmin_ghz: float | None = Query(None, gt=0, description="SODA band lower edge (GHz)"),
+    fmax_ghz: float | None = Query(None, gt=0, description="SODA band upper edge (GHz)"),
+    mode: str = Query("auto", pattern="^(auto|cutout|download)$"),
 ) -> Spectrum1D:
-    """Download a cube product (cached on disk) and extract an aperture spectrum."""
+    """Aperture spectrum of a cube product: SODA cutout when available, else a cached download."""
     if not cubes._allowed(product_url):
         raise HTTPException(status_code=400, detail="product_url must point at ALMA or ESO")
+    band = (fmin_ghz, fmax_ghz) if fmin_ghz and fmax_ghz else None
     try:
         return await run_in_threadpool(
-            cubes.get_cube_service().spectrum, product_url, ra, dec, radius_arcsec, method, max_mb
+            cubes.get_cube_service().spectrum,
+            product_url,
+            ra,
+            dec,
+            radius_arcsec,
+            method,
+            max_mb,
+            None,
+            None,
+            band,
+            mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -213,11 +227,17 @@ async def cube_spectrum_start(
     radius_arcsec: float = Query(3.0, gt=0.0, le=60.0),
     method: str = Query("sum", pattern="^(sum|mean)$"),
     max_mb: float | None = Query(None, gt=0, le=200_000, description="Override the download cap"),
+    fmin_ghz: float | None = Query(None, gt=0, description="SODA band lower edge (GHz)"),
+    fmax_ghz: float | None = Query(None, gt=0, description="SODA band upper edge (GHz)"),
+    mode: str = Query("auto", pattern="^(auto|cutout|download)$"),
 ) -> CubeJobStatus:
-    """Start a download-and-extract job; poll /spectrum/cube/jobs/{id} for progress."""
+    """Start a cutout-or-download job; poll /spectrum/cube/jobs/{id} for progress."""
     if not cubes._allowed(product_url):
         raise HTTPException(status_code=400, detail="product_url must point at ALMA or ESO")
-    job = cubes.get_cube_service().start_job(product_url, ra, dec, radius_arcsec, method, max_mb)
+    band = (fmin_ghz, fmax_ghz) if fmin_ghz and fmax_ghz else None
+    job = cubes.get_cube_service().start_job(
+        product_url, ra, dec, radius_arcsec, method, max_mb, band, mode
+    )
     return _job_status(job)
 
 

@@ -338,8 +338,6 @@ interface SourceColumnProps {
   plotted: PlottedItem[];
   onToggleTrace: (id: string, visible: boolean) => void;
   onRemoveTrace: (id: string) => void;
-  cache: CubeCacheStatus | null;
-  onClearCache: () => void;
   hiSource: string | null;
   onHITemplate: (d: HIDetection) => void;
   onUpload: (file: File | undefined) => void;
@@ -627,30 +625,6 @@ function SourceColumn(p: SourceColumnProps) {
         HST and JWST products stay in the observation list: MAST offers no
         cutout service for them.
       </p>
-      {p.cache && (
-        <p
-          className="mt-1 px-1 text-[10px] text-slate-500"
-          title={`Downloaded ALMA cubes are kept in ${p.cache.dir} so a second extraction is instant; the oldest are deleted beyond ${(p.cache.limit_mb / 1000).toFixed(1)} GB. MUSE cutouts are never written to disk.`}
-        >
-          cube cache: {p.cache.files} file{p.cache.files === 1 ? "" : "s"},{" "}
-          {p.cache.bytes_mb >= 1000
-            ? `${(p.cache.bytes_mb / 1000).toFixed(2)} GB`
-            : `${p.cache.bytes_mb.toFixed(0)} MB`}{" "}
-          of {(p.cache.limit_mb / 1000).toFixed(1)} GB
-          {p.cache.files > 0 && (
-            <>
-              {" · "}
-              <button
-                type="button"
-                onClick={p.onClearCache}
-                className="text-sky-300 underline hover:text-sky-200"
-              >
-                clear
-              </button>
-            </>
-          )}
-        </p>
-      )}
     </div>
   );
 }
@@ -898,6 +872,21 @@ export default function SpectrumPanel({
     [expandedAlma, listAlmaProducts],
   );
 
+  /** SODA band for an ALMA cutout: the chosen line ± twice the velocity window (at least
+   * ±2000 km/s) when the product's window holds the line; otherwise the whole product. */
+  const cutoutBand = useCallback(
+    (product: CubeProduct): { fminGhz?: number; fmaxGhz?: number } => {
+      const line = referenceRadio?.observed_frequency_ghz ?? null;
+      if (line === null || containsLine(product, line) !== true) return {};
+      const v = Math.max(2 * window, 2000);
+      return {
+        fminGhz: line * (1 - v / C_KMS),
+        fmaxGhz: line * (1 + v / C_KMS),
+      };
+    },
+    [referenceRadio, window],
+  );
+
   const extractAlma = useCallback(
     async (
       req: SpectrumRequest,
@@ -909,7 +898,7 @@ export default function SpectrumPanel({
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
-      setLoading(`Downloading ${product.name}…`);
+      setLoading(`Requesting a SODA cutout of ${product.name} from ALMA…`);
       setProgress({
         state: "queued",
         downloadedMb: 0,
@@ -925,6 +914,8 @@ export default function SpectrumPanel({
           radiusArcsec: radius,
           method,
           maxMb: product.size_mb ? Math.ceil(product.size_mb * 1.2) : undefined,
+          ...cutoutBand(product),
+          mode: "auto" as const,
         };
         let job = await startCubeSpectrumJob(opts, ac.signal);
         while (job.state !== "done" && job.state !== "error") {
@@ -941,7 +932,9 @@ export default function SpectrumPanel({
           setLoading(
             j.state === "extracting"
               ? `Extracting the aperture spectrum from ${product.name}…`
-              : `Downloading ${product.name}…`,
+              : j.state === "downloading"
+                ? `No SODA cutout for this product: downloading ${product.name} in full…`
+                : `Requesting a SODA cutout of ${product.name} from ALMA (aperture + band)… usually seconds`,
           );
         }
         if (job.state === "error" || !job.spectrum)
@@ -973,7 +966,7 @@ export default function SpectrumPanel({
         }
       }
     },
-    [extractPosition, radius, method, addTrace],
+    [extractPosition, radius, method, addTrace, cutoutBand],
   );
 
   // Elapsed-time ticker while something is loading; cache usage when the tab opens.
@@ -1389,14 +1382,6 @@ export default function SpectrumPanel({
             plotted={plotted}
             onToggleTrace={togglePlotted}
             onRemoveTrace={removePlotted}
-            cache={cache}
-            onClearCache={() =>
-              void clearCubeCache()
-                .then(setCache)
-                .catch((e: unknown) =>
-                  setError(e instanceof ApiError ? e.message : String(e)),
-                )
-            }
             hiSource={hiSource}
             onHITemplate={loadHITemplate}
             onUpload={(f) => void onUpload(f)}
@@ -1504,6 +1489,33 @@ export default function SpectrumPanel({
             <option value="sum">sum over aperture</option>
             <option value="mean">mean per spaxel</option>
           </select>
+          {cache && (
+            <span
+              className="ml-auto flex items-center gap-1 text-slate-500"
+              title={`ALMA cubes that had to be downloaded in full are kept in ${cache.dir} so a second extraction is instant; the oldest are deleted beyond ${(cache.limit_mb / 1000).toFixed(1)} GB. SODA cutouts and MUSE cutouts are never written to disk.`}
+            >
+              cube cache{" "}
+              {cache.files === 0
+                ? "empty"
+                : `${cache.files} file${cache.files === 1 ? "" : "s"}, ${cache.bytes_mb >= 1000 ? `${(cache.bytes_mb / 1000).toFixed(2)} GB` : `${cache.bytes_mb.toFixed(0)} MB`}`}
+              {cache.files > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void clearCubeCache()
+                      .then(setCache)
+                      .catch((e: unknown) =>
+                        setError(e instanceof ApiError ? e.message : String(e)),
+                      )
+                  }
+                  className="rounded border border-slate-700 px-1.5 py-0.5 text-slate-200 hover:bg-rose-900/40 hover:text-rose-200"
+                  title="Delete every downloaded cube from disk"
+                >
+                  clear cache
+                </button>
+              )}
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -1686,7 +1698,9 @@ export default function SpectrumPanel({
                         ? "extracting"
                         : progress.state === "soda"
                           ? "waiting for ESO"
-                          : "starting"}
+                          : progress.state === "cutout"
+                            ? "waiting for ALMA"
+                            : "starting"}
                 </span>
               </div>
             )}
@@ -1739,7 +1753,7 @@ export default function SpectrumPanel({
             {traces
               .map(
                 (t) =>
-                  `${t.label}: ${t.spectrum.n_channels} ch, ${t.spectrum.n_spaxels} spx, pixel ${t.spectrum.pixel_scale_arcsec?.toFixed(2)}″${t.spectrum.cached ? ", cached" : ""}`,
+                  `${t.label}: ${t.spectrum.n_channels} ch, ${t.spectrum.n_spaxels} spx, pixel ${t.spectrum.pixel_scale_arcsec?.toFixed(2)}″${t.spectrum.source.access ? `, ${t.spectrum.source.access}` : ""}${t.spectrum.source.band_ghz ? ` ${t.spectrum.source.band_ghz} GHz` : ""}${t.spectrum.cached ? ", cached" : ""}`,
               )
               .join(" · ")}
             {hiTemplateOn && hiProfile && xMode === "velocity"

@@ -36,6 +36,12 @@ class Overlay(BaseModel):
 
 SURVEYS: list[Survey] = [
     Survey(
+        id="CDS/P/Rubin/FirstLook",
+        label="Rubin First Look",
+        band="optical",
+        description="Vera C. Rubin Observatory first-look imaging (partial sky)",
+    ),
+    Survey(
         id="P/DSS2/color",
         label="DSS2 colour",
         band="optical",

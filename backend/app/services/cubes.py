@@ -14,14 +14,15 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
 from app.schemas.spectra import Spectrum1D
-from app.services.muse import extract_from_hdul
+from app.services.muse import extract_from_hdul, extract_spectrum
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ ALLOWED_HOSTS = (
     "dataportal.eso.org",
 )
 C_KM_S = 299792.458
+C_M_S = 299792458.0
+# ALMA mirrors that expose the SODA cutout service (REQUEST=queryData&ID=<product file name>)
+SODA_HOSTS = ("almascience.eso.org", "almascience.org", "almascience.nrao.edu")
+USER_AGENT = {"User-Agent": "AstroScope/0.1"}
 DEFAULT_MAX_MB = 600.0
 CACHE_DIR = Path(tempfile.gettempdir()) / "astroscope-cubes"
 CACHE_LIMIT_BYTES = 6 * 1024**3
@@ -102,46 +107,85 @@ def classify_product(name: str) -> tuple[str, int | None, float | None, str | No
     return kind, spw, centre, intent
 
 
-def list_products(datalink_url: str, timeout: float = 60.0) -> list[CubeProduct]:
+def _product_from_row(row) -> CubeProduct | None:
+    url = row.access_url
+    if not url:
+        return None
+    name = os.path.basename(urlparse(url).path)
+    ctype = (row.content_type or "").lower()
+    lname = name.lower()
+    is_fits = "fits" in ctype or lname.endswith((".fits", ".fits.gz", ".fits.fz"))
+    kind, spw, centre, intent = classify_product(name)
+    if not is_fits and kind != "package":
+        return None
+    if is_fits and kind == "package":
+        kind = "other"
+    size = row.content_length
+    return CubeProduct(
+        name=name,
+        url=url,
+        size_mb=round(float(size) / 1e6, 1) if size else None,
+        spw=spw,
+        kind=kind,
+        semantics=row.semantics,
+        content_type=row.content_type,
+        freq_center_ghz=centre,
+        intent=intent,
+    )
+
+
+def _is_recursive_datalink(row) -> bool:
+    """ALMA lists the files inside a tar package through a nested DataLink document."""
+    ctype = (row.content_type or "").lower()
+    return "content=datalink" in ctype and bool(row.access_url)
+
+
+def list_products(
+    datalink_url: str, timeout: float = 60.0, expand_packages: bool = True, max_nested: int = 24
+) -> list[CubeProduct]:
     """Products listed by a DataLink document: science cubes first, then images, auxiliary
-    cubes (mask/pb/psf/...), calibrator cubes and packaged tarballs (kind "package")."""
+    cubes (mask/pb/psf/...), calibrator cubes and packaged tarballs (kind "package"). Nested
+    DataLink documents (the contents of ALMA tar packages) are expanded one level."""
     from pyvo.dal.adhoc import DatalinkResults
 
     from app.services.simbad import _TimeoutSession
 
     if not _allowed(datalink_url):
         raise ValueError("DataLink URL must point at the ALMA or ESO archive")
-    dl = DatalinkResults.from_result_url(datalink_url, session=_TimeoutSession(timeout))
+    session = _TimeoutSession(timeout)
+    dl = DatalinkResults.from_result_url(datalink_url, session=session)
     products: list[CubeProduct] = []
+    nested: list[str] = []
     for row in dl:
-        url = row.access_url
-        if not url:
+        if expand_packages and _is_recursive_datalink(row):
+            if row.access_url not in nested and _allowed(row.access_url):
+                nested.append(row.access_url)
             continue
-        name = os.path.basename(urlparse(url).path)
-        ctype = (row.content_type or "").lower()
-        lname = name.lower()
-        is_fits = "fits" in ctype or lname.endswith((".fits", ".fits.gz", ".fits.fz"))
-        kind, spw, centre, intent = classify_product(name)
-        if not is_fits and kind != "package":
+        p = _product_from_row(row)
+        if p is not None:
+            products.append(p)
+
+    def _nested(url: str) -> list[CubeProduct]:
+        try:
+            sub = DatalinkResults.from_result_url(url, session=session)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Nested DataLink %s failed: %s", url, exc)
+            return []
+        return [p for p in (_product_from_row(r) for r in sub) if p is not None]
+
+    if nested:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for chunk in pool.map(_nested, nested[:max_nested]):
+                products.extend(chunk)
+    seen: set[str] = set()
+    unique = []
+    for p in products:
+        if p.url in seen:
             continue
-        if is_fits and kind == "package":
-            kind = "other"
-        size = row.content_length
-        products.append(
-            CubeProduct(
-                name=name,
-                url=url,
-                size_mb=round(float(size) / 1e6, 1) if size else None,
-                spw=spw,
-                kind=kind,
-                semantics=row.semantics,
-                content_type=row.content_type,
-                freq_center_ghz=centre,
-                intent=intent,
-            )
-        )
-    products.sort(key=product_sort_key)
-    return products
+        seen.add(p.url)
+        unique.append(p)
+    unique.sort(key=product_sort_key)
+    return unique
 
 
 def product_sort_key(p: CubeProduct) -> tuple:
@@ -150,6 +194,87 @@ def product_sort_key(p: CubeProduct) -> tuple:
 
 
 Progress = Callable[[int, int | None], None]
+
+
+class CutoutUnavailable(Exception):
+    """The SODA service could not serve this product; the caller may download it instead."""
+
+
+def alma_soda_url(
+    product_url: str,
+    ra: float,
+    dec: float,
+    radius_arcsec: float,
+    band_ghz: tuple[float, float] | None = None,
+    host: str | None = None,
+) -> str:
+    """ALMA SODA sync request for a spatial (and optional spectral) cutout of one product.
+    BAND is in metres, as the SODA standard requires."""
+    name = os.path.basename(urlparse(product_url).path)
+    host = host or urlparse(product_url).hostname or SODA_HOSTS[0]
+    params = [
+        ("REQUEST", "queryData"),
+        ("ID", name),
+        ("POS", f"CIRCLE {ra:.6f} {dec:.6f} {radius_arcsec / 3600.0:.6f}"),
+    ]
+    if band_ghz:
+        lo, hi = sorted(band_ghz)
+        if lo > 0 and hi > 0:
+            params.append(("BAND", f"{C_M_S / (hi * 1e9):.9e} {C_M_S / (lo * 1e9):.9e}"))
+    return f"https://{host}/soda/sync?{urlencode(params)}"
+
+
+class AlmaCutoutClient:
+    """Fetch an aperture (+ band) cutout of an ALMA cube product through SODA, trying the
+    product's own mirror first and then the other mirrors."""
+
+    def __init__(self, timeout: float = 300.0):
+        self.timeout = timeout
+
+    def fetch(
+        self,
+        product_url: str,
+        ra: float,
+        dec: float,
+        radius_arcsec: float,
+        band_ghz: tuple[float, float] | None = None,
+    ) -> bytes:
+        own = urlparse(product_url).hostname or ""
+        hosts = [own] + [h for h in SODA_HOSTS if h != own]
+        errors: list[str] = []
+        for host in hosts:
+            url = alma_soda_url(product_url, ra, dec, radius_arcsec, band_ghz, host=host)
+            t0 = time.monotonic()
+            try:
+                with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+                    res = client.get(url, headers=USER_AGENT)
+            except httpx.HTTPError as exc:
+                errors.append(f"{host}: {type(exc).__name__}")
+                continue
+            if res.status_code == 204 or (res.status_code == 200 and not res.content):
+                raise ValueError(
+                    "ALMA SODA returned no data (HTTP 204): the position lies outside this "
+                    "cube's footprint or the band is outside its spectral range. Extract at "
+                    "the cube centre, widen the band, or pick another product."
+                )
+            if res.status_code != 200:
+                errors.append(f"{host}: HTTP {res.status_code}")
+                continue
+            data = res.content
+            if data[:2] == b"\x1f\x8b":
+                data = gzip.decompress(data)
+            if not data.startswith(b"SIMPLE"):
+                errors.append(f"{host}: non-FITS reply")
+                continue
+            log.info(
+                "ALMA SODA cutout %s r=%.1f arcsec -> %d bytes in %.1fs",
+                url,
+                radius_arcsec,
+                len(data),
+                time.monotonic() - t0,
+            )
+            return data
+        raise CutoutUnavailable("; ".join(errors) or "no SODA host answered")
 
 
 def _plain_path(path: Path) -> Path:
@@ -301,7 +426,7 @@ class CubeJob:
     """A download-and-extract run in a background thread, polled by the client."""
 
     id: str
-    state: str = "queued"  # queued | downloading | extracting | done | error
+    state: str = "queued"  # queued | cutout | downloading | extracting | done | error
     downloaded: int = 0
     total: int | None = None
     message: str | None = None
@@ -314,8 +439,17 @@ JOB_TTL_S = 900.0
 
 
 class CubeSpectrumService:
-    def __init__(self, store: CubeStore | None = None, cache_ttl: int = 3600):
+    """Aperture spectra from ALMA cube products: a SODA cutout when the archive serves one
+    (seconds, nothing on disk), else a full download kept in the cube store."""
+
+    def __init__(
+        self,
+        store: CubeStore | None = None,
+        cache_ttl: int = 3600,
+        cutouts: AlmaCutoutClient | None = None,
+    ):
         self.store = store or CubeStore()
+        self.cutouts = cutouts
         self.cache_ttl = cache_ttl
         self._cache: dict[tuple, tuple[float, Spectrum1D]] = {}
         self._lock = threading.Lock()
@@ -330,18 +464,55 @@ class CubeSpectrumService:
         method: str = "sum",
         max_mb: float | None = None,
         progress: Progress | None = None,
-        on_extract: Callable[[], None] | None = None,
+        on_state: Callable[[str], None] | None = None,
+        band_ghz: tuple[float, float] | None = None,
+        mode: str = "auto",  # auto | cutout | download
     ) -> Spectrum1D:
-        key = (product_url, round(ra, 6), round(dec, 6), round(radius_arcsec, 2), method)
+        key = (
+            product_url,
+            round(ra, 6),
+            round(dec, 6),
+            round(radius_arcsec, 2),
+            method,
+            tuple(round(b, 4) for b in band_ghz) if band_ghz else None,
+            mode,
+        )
         now = time.monotonic()
         with self._lock:
             hit = self._cache.get(key)
             if hit and hit[0] > now:
                 return hit[1].model_copy(update={"cached": True})
-        path = self.store.fetch(product_url, max_mb=max_mb, progress=progress)
-        if on_extract:
-            on_extract()
-        spec = extract_from_file(path, ra, dec, radius_arcsec, method=method)
+        state = on_state or (lambda _s: None)
+        name = os.path.basename(urlparse(product_url).path)
+        fallback_note: str | None = None
+        spec: Spectrum1D | None = None
+        if mode in ("auto", "cutout") and self.cutouts is not None:
+            state("cutout")
+            try:
+                data = self.cutouts.fetch(product_url, ra, dec, radius_arcsec, band_ghz)
+            except CutoutUnavailable as exc:
+                if mode == "cutout":
+                    raise ValueError(f"ALMA SODA cutout failed: {exc}") from exc
+                fallback_note = str(exc)
+                log.warning("SODA cutout unavailable for %s (%s); downloading", name, exc)
+            else:
+                state("extracting")
+                spec = extract_spectrum(data, ra, dec, radius_arcsec, method=method)
+                spec.frequency_ghz = frequency_axis_ghz(spec.wavelength_A)
+                spec.source["product"] = name
+                spec.source["access"] = "SODA cutout"
+                if band_ghz:
+                    lo, hi = sorted(band_ghz)
+                    spec.source["band_ghz"] = f"{lo:.4f}-{hi:.4f}"
+        if spec is None:
+            path = self.store.fetch(product_url, max_mb=max_mb, progress=progress)
+            state("extracting")
+            spec = extract_from_file(path, ra, dec, radius_arcsec, method=method)
+            spec.source["access"] = "full download"
+            if fallback_note:
+                spec.warnings.append(
+                    f"SODA cutout unavailable ({fallback_note}); the full product was downloaded"
+                )
         spec.source["product_url"] = product_url
         with self._lock:
             self._cache[key] = (now + self.cache_ttl, spec)
@@ -356,6 +527,8 @@ class CubeSpectrumService:
         radius_arcsec: float,
         method: str = "sum",
         max_mb: float | None = None,
+        band_ghz: tuple[float, float] | None = None,
+        mode: str = "auto",
     ) -> CubeJob:
         self._reap_jobs()
         job = CubeJob(id=uuid.uuid4().hex[:12])
@@ -366,13 +539,22 @@ class CubeSpectrumService:
             job.state = "downloading"
             job.downloaded, job.total = done, total
 
-        def on_extract() -> None:
-            job.state = "extracting"
+        def on_state(state: str) -> None:
+            job.state = state
 
         def run() -> None:
             try:
                 job.result = self.spectrum(
-                    product_url, ra, dec, radius_arcsec, method, max_mb, progress, on_extract
+                    product_url,
+                    ra,
+                    dec,
+                    radius_arcsec,
+                    method,
+                    max_mb,
+                    progress,
+                    on_state,
+                    band_ghz,
+                    mode,
                 )
                 job.state = "done"
             except Exception as exc:  # noqa: BLE001
@@ -414,6 +596,7 @@ def get_cube_service() -> CubeSpectrumService:
                     max_mb=s.cube_download_max_mb,
                     timeout=s.remote_timeout * 30,
                     limit_bytes=int(s.cube_cache_gb * 1024**3),
-                )
+                ),
+                cutouts=AlmaCutoutClient(timeout=s.remote_timeout * 6),
             )
         return _service

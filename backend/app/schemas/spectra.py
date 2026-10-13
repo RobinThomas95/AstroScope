@@ -69,7 +69,7 @@ class CubeProductOut(BaseModel):
 
 class CubeJobStatus(BaseModel):
     job_id: str
-    state: str = Field(description="queued | downloading | extracting | done | error")
+    state: str = Field(description="queued | cutout | downloading | extracting | done | error")
     downloaded_mb: float = 0.0
     total_mb: float | None = None
     message: str | None = None

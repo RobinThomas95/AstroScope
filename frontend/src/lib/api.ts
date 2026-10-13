@@ -316,6 +316,10 @@ export function startCubeSpectrumJob(
     radiusArcsec: number;
     method: "sum" | "mean";
     maxMb?: number;
+    /** SODA band edges in GHz (ALMA cutouts only). */
+    fminGhz?: number;
+    fmaxGhz?: number;
+    mode?: "auto" | "cutout" | "download";
   },
   signal?: AbortSignal,
 ) {
@@ -327,6 +331,11 @@ export function startCubeSpectrumJob(
     method: opts.method,
   });
   if (opts.maxMb) params.set("max_mb", String(opts.maxMb));
+  if (opts.fminGhz && opts.fmaxGhz) {
+    params.set("fmin_ghz", opts.fminGhz.toFixed(6));
+    params.set("fmax_ghz", opts.fmaxGhz.toFixed(6));
+  }
+  if (opts.mode) params.set("mode", opts.mode);
   return postJson<CubeJobStatus>(
     `/api/spectrum/cube/jobs?${params.toString()}`,
     {},

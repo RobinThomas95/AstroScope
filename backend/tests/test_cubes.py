@@ -363,3 +363,136 @@ def test_store_keeps_only_the_unpacked_copy(tmp_path, monkeypatch):
     seen = []
     assert store.fetch(url, progress=lambda d, t: seen.append((d, t))) == cubes._plain_path(gz)
     assert seen and seen[-1][0] == seen[-1][1] > 0
+
+
+def test_list_products_expands_nested_datalink(monkeypatch):
+    from pyvo.dal import adhoc
+
+    top = DL(
+        [
+            Row(
+                "https://almascience.org/dataPortal/2017.1.00886.L_uid___A001_X1_001_of_001.tar",
+                "application/x-tar",
+                9e9,
+            ),
+            Row(
+                "https://almascience.org/datalink/sync?ID=2017.1.00886.L_uid___A001_X1_001_of_001.tar",
+                "application/x-votable+xml;content=datalink",
+                None,
+                semantics="#this",
+            ),
+        ]
+    )
+    inner = DL(
+        [
+            Row(
+                "https://almascience.org/dataPortal/member.uid___A001_X1.ari_l.NGC_1365_sci.spw0_229397MHz.12m.cube.I.pbcor.fits",
+                "application/fits",
+                300e6,
+            ),
+            Row(
+                "https://almascience.org/dataPortal/member.uid___A001_X1.ari_l.NGC_1365_sci.spw0_229397MHz.12m.cube.I.pb.fits.gz",
+                "application/fits",
+                30e6,
+            ),
+        ]
+    )
+
+    def fake(url, session=None):
+        return inner if "datalink/sync?ID=2017" in url else top
+
+    monkeypatch.setattr(adhoc.DatalinkResults, "from_result_url", staticmethod(fake))
+    prods = list_products("https://almascience.org/datalink/sync?ID=uid://A001/X1")
+    assert [p.kind for p in prods] == ["cube", "auxiliary", "package"]
+    assert prods[0].freq_center_ghz == pytest.approx(229.397)
+    # without expansion only the package is visible
+    prods = list_products(
+        "https://almascience.org/datalink/sync?ID=uid://A001/X1", expand_packages=False
+    )
+    assert [p.kind for p in prods] == ["package"]
+
+
+def test_alma_soda_url_band_in_metres():
+    url = cubes.alma_soda_url(
+        "https://almascience.org/dataPortal/member.uid___A001_X1.cube.I.pbcor.fits",
+        53.4015,
+        -36.1404,
+        2.0,
+        band_ghz=(229.0, 230.0),
+    )
+    assert url.startswith("https://almascience.org/soda/sync?REQUEST=queryData&ID=member.uid")
+    assert "POS=CIRCLE+53.401500+-36.140400+0.000556" in url
+    lam_hi = 299792458.0 / 229.0e9
+    assert f"{lam_hi:.9e}" in url  # longer wavelength = lower frequency edge
+    assert "BAND=" in url and "almascience.eso.org" in cubes.alma_soda_url(
+        "https://almascience.org/x.fits", 1, 2, 3, host="almascience.eso.org"
+    )
+
+
+class _Resp:
+    def __init__(self, status, content=b""):
+        self.status_code = status
+        self.content = content
+
+
+def test_alma_cutout_client_falls_back_to_other_mirrors(monkeypatch):
+    import httpx
+
+    data, _, _ = make_alma_cube()
+    calls = []
+
+    def fake_get(self, url, headers=None):
+        calls.append(url)
+        if "almascience.org/soda" in url:
+            return _Resp(404)
+        if "almascience.eso.org/soda" in url:
+            return _Resp(200, data)
+        return _Resp(500)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    client = cubes.AlmaCutoutClient()
+    out = client.fetch("https://almascience.org/dataPortal/a.cube.I.pbcor.fits", RA0, DEC0, 2.0)
+    assert out == data and len(calls) == 2 and "eso.org" in calls[1]
+
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, headers=None: _Resp(204))
+    with pytest.raises(ValueError, match="outside"):
+        client.fetch("https://almascience.org/dataPortal/a.fits", RA0, DEC0, 2.0)
+
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, headers=None: _Resp(503))
+    with pytest.raises(cubes.CutoutUnavailable):
+        client.fetch("https://almascience.org/dataPortal/a.fits", RA0, DEC0, 2.0)
+
+
+def test_service_prefers_cutout_and_falls_back_to_download(tmp_path):
+    data, k, _ = make_alma_cube()
+    fetched = []
+
+    class Store(CubeStore):
+        def fetch(self, url, max_mb=None, progress=None):
+            fetched.append(url)
+            p = Path(tmp_path) / "x-cube.fits"
+            p.write_bytes(data)
+            return p
+
+    class Cutouts:
+        def __init__(self, ok):
+            self.ok = ok
+
+        def fetch(self, url, ra, dec, r, band=None):
+            if not self.ok:
+                raise cubes.CutoutUnavailable("eso.org: HTTP 500")
+            return data
+
+    url = "https://almascience.org/dataPortal/a.cube.I.pbcor.fits"
+    states = []
+    svc = CubeSpectrumService(store=Store(cache_dir=tmp_path), cutouts=Cutouts(True))
+    spec = svc.spectrum(url, RA0, DEC0, 0.6, on_state=states.append, band_ghz=(229.0, 230.0))
+    assert spec.source["access"] == "SODA cutout" and spec.flux[k] == pytest.approx(1.0)
+    assert states == ["cutout", "extracting"] and fetched == []
+
+    svc = CubeSpectrumService(store=Store(cache_dir=tmp_path), cutouts=Cutouts(False))
+    spec = svc.spectrum(url, RA0, DEC0, 0.6, on_state=states.append)
+    assert spec.source["access"] == "full download" and fetched == [url]
+    assert any("SODA cutout unavailable" in w for w in spec.warnings)
+    with pytest.raises(ValueError, match="SODA cutout failed"):
+        svc.spectrum(url, RA0, DEC0, 0.6, mode="cutout")
