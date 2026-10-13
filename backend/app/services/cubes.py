@@ -220,7 +220,7 @@ def alma_soda_url(
     if band_ghz:
         lo, hi = sorted(band_ghz)
         if lo > 0 and hi > 0:
-            params.append(("BAND", f"{C_M_S / (hi * 1e9):.9e} {C_M_S / (lo * 1e9):.9e}"))
+            params.append(("BAND", f"{C_M_S / (hi * 1e9):.12f} {C_M_S / (lo * 1e9):.12f}"))
     return f"https://{host}/soda/sync?{urlencode(params)}"
 
 
@@ -242,14 +242,19 @@ class AlmaCutoutClient:
         own = urlparse(product_url).hostname or ""
         hosts = [own] + [h for h in SODA_HOSTS if h != own]
         errors: list[str] = []
+        attempts: list[tuple[str, tuple[float, float] | None]] = []
         for host in hosts:
-            url = alma_soda_url(product_url, ra, dec, radius_arcsec, band_ghz, host=host)
+            attempts.append((host, band_ghz))
+            if band_ghz:  # a rejected BAND should not cost the whole cutout
+                attempts.append((host, None))
+        for host, band in attempts:
+            url = alma_soda_url(product_url, ra, dec, radius_arcsec, band, host=host)
             t0 = time.monotonic()
             try:
                 with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
                     res = client.get(url, headers=USER_AGENT)
             except httpx.HTTPError as exc:
-                errors.append(f"{host}: {type(exc).__name__}")
+                errors.append(f"{host}{' (band)' if band else ''}: {type(exc).__name__}")
                 continue
             if res.status_code == 204 or (res.status_code == 200 and not res.content):
                 raise ValueError(
@@ -258,13 +263,17 @@ class AlmaCutoutClient:
                     "the cube centre, widen the band, or pick another product."
                 )
             if res.status_code != 200:
-                errors.append(f"{host}: HTTP {res.status_code}")
+                snippet = res.content[:160].decode("utf-8", "replace").strip().replace("\n", " ")
+                errors.append(
+                    f"{host}{' (band)' if band else ''}: HTTP {res.status_code} {snippet}"
+                )
                 continue
             data = res.content
             if data[:2] == b"\x1f\x8b":
                 data = gzip.decompress(data)
             if not data.startswith(b"SIMPLE"):
-                errors.append(f"{host}: non-FITS reply")
+                snippet = data[:160].decode("utf-8", "replace").strip().replace("\n", " ")
+                errors.append(f"{host}{' (band)' if band else ''}: non-FITS reply {snippet}")
                 continue
             log.info(
                 "ALMA SODA cutout %s r=%.1f arcsec -> %d bytes in %.1fs",
@@ -494,6 +503,7 @@ class CubeSpectrumService:
                 if mode == "cutout":
                     raise ValueError(f"ALMA SODA cutout failed: {exc}") from exc
                 fallback_note = str(exc)
+                state(f"downloading:{fallback_note}")
                 log.warning("SODA cutout unavailable for %s (%s); downloading", name, exc)
             else:
                 state("extracting")
@@ -540,7 +550,10 @@ class CubeSpectrumService:
             job.downloaded, job.total = done, total
 
         def on_state(state: str) -> None:
-            job.state = state
+            if state.startswith("downloading:"):
+                job.state, job.message = "downloading", f"SODA cutout unavailable: {state[12:]}"
+            else:
+                job.state = state
 
         def run() -> None:
             try:

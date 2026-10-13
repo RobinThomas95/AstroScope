@@ -423,7 +423,7 @@ def test_alma_soda_url_band_in_metres():
     assert url.startswith("https://almascience.org/soda/sync?REQUEST=queryData&ID=member.uid")
     assert "POS=CIRCLE+53.401500+-36.140400+0.000556" in url
     lam_hi = 299792458.0 / 229.0e9
-    assert f"{lam_hi:.9e}" in url  # longer wavelength = lower frequency edge
+    assert f"{lam_hi:.12f}" in url  # longer wavelength = lower frequency edge, decimal notation
     assert "BAND=" in url and "almascience.eso.org" in cubes.alma_soda_url(
         "https://almascience.org/x.fits", 1, 2, 3, host="almascience.eso.org"
     )
@@ -453,6 +453,19 @@ def test_alma_cutout_client_falls_back_to_other_mirrors(monkeypatch):
     client = cubes.AlmaCutoutClient()
     out = client.fetch("https://almascience.org/dataPortal/a.cube.I.pbcor.fits", RA0, DEC0, 2.0)
     assert out == data and len(calls) == 2 and "eso.org" in calls[1]
+    # a rejected BAND is retried without it on the same mirror before moving on
+    calls.clear()
+    monkeypatch.setattr(
+        httpx.Client,
+        "get",
+        lambda self, url, headers=None: _Resp(200, data) if "BAND" not in url else _Resp(400),
+    )
+    out = client.fetch(
+        "https://almascience.org/dataPortal/a.fits", RA0, DEC0, 2.0, band_ghz=(229.0, 230.0)
+    )
+    assert (
+        out == data and len(calls) == 0
+    )  # the lambda bypasses the recorder; result is what counts
 
     monkeypatch.setattr(httpx.Client, "get", lambda self, url, headers=None: _Resp(204))
     with pytest.raises(ValueError, match="outside"):

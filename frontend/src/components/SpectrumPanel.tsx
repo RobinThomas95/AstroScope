@@ -35,6 +35,8 @@ import type {
 
 const Plot = createPlotlyComponent(Plotly);
 const C_KMS = 299792.458;
+/** Above this size a failed SODA cutout is reported instead of silently downloading the cube. */
+const AUTO_DOWNLOAD_MAX_MB = 500;
 const COLORS = [
   "#7dd3fc",
   "#fb923c",
@@ -671,6 +673,11 @@ export default function SpectrumPanel({
   } | null>(null);
   const [, setTick] = useState(0);
   const [cache, setCache] = useState<CubeCacheStatus | null>(null);
+  /** A cutout that failed on a big product: offer the full download explicitly. */
+  const [downloadOffer, setDownloadOffer] = useState<{
+    req: SpectrumRequest;
+    product: CubeProduct;
+  } | null>(null);
   const [hiProfile, setHIProfile] = useState<HIProfile | null>(null);
   const [hiError, setHIError] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<UploadedHI | null>(null);
@@ -892,13 +899,25 @@ export default function SpectrumPanel({
       req: SpectrumRequest,
       product: CubeProduct,
       pos: "target" | "cube",
+      mode?: "auto" | "cutout" | "download",
     ) => {
       const at = extractPosition(req, pos);
       if (!at) return;
+      // Small products may fall back to a full download on their own; big ones only on request.
+      const chosen =
+        mode ??
+        (product.size_mb !== null && product.size_mb > AUTO_DOWNLOAD_MAX_MB
+          ? "cutout"
+          : "auto");
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
-      setLoading(`Requesting a SODA cutout of ${product.name} from ALMA…`);
+      setDownloadOffer(null);
+      setLoading(
+        chosen === "download"
+          ? `Downloading ${product.name} in full…`
+          : `Requesting a SODA cutout of ${product.name} from ALMA…`,
+      );
       setProgress({
         state: "queued",
         downloadedMb: 0,
@@ -915,7 +934,7 @@ export default function SpectrumPanel({
           method,
           maxMb: product.size_mb ? Math.ceil(product.size_mb * 1.2) : undefined,
           ...cutoutBand(product),
-          mode: "auto" as const,
+          mode: chosen,
         };
         let job = await startCubeSpectrumJob(opts, ac.signal);
         while (job.state !== "done" && job.state !== "error") {
@@ -933,7 +952,7 @@ export default function SpectrumPanel({
             j.state === "extracting"
               ? `Extracting the aperture spectrum from ${product.name}…`
               : j.state === "downloading"
-                ? `No SODA cutout for this product: downloading ${product.name} in full…`
+                ? `${j.message ? `${j.message}. ` : ""}Downloading ${product.name} in full…`
                 : `Requesting a SODA cutout of ${product.name} from ALMA (aperture + band)… usually seconds`,
           );
         }
@@ -957,8 +976,10 @@ export default function SpectrumPanel({
           setNormalised(true);
         }
       } catch (e: unknown) {
-        if (!ac.signal.aborted)
+        if (!ac.signal.aborted) {
           setError(e instanceof ApiError ? e.message : String(e));
+          if (chosen === "cutout") setDownloadOffer({ req, product });
+        }
       } finally {
         if (!ac.signal.aborted) {
           setLoading(null);
@@ -1707,6 +1728,37 @@ export default function SpectrumPanel({
           </div>
         )}
         {error && <p className="text-rose-300">{error}</p>}
+        {downloadOffer && !loading && (
+          <p className="flex flex-wrap items-center gap-2 text-slate-400">
+            The ALMA SODA service did not serve a cutout of this product (see
+            above). Run
+            <code className="rounded bg-slate-800 px-1 text-[11px] text-slate-200">
+              backend/scripts/alma_soda_diag.py "{downloadOffer.product.url}"{" "}
+              {target?.coordinates.ra_deg.toFixed(5)}{" "}
+              {target?.coordinates.dec_deg.toFixed(5)} {radius}
+            </code>
+            to see each mirror's reply, or
+            <button
+              type="button"
+              onClick={() =>
+                void extractAlma(
+                  downloadOffer.req,
+                  downloadOffer.product,
+                  position,
+                  "download",
+                )
+              }
+              className="rounded border border-amber-700 px-1.5 py-0.5 text-amber-300 hover:bg-amber-900/40"
+            >
+              download the full product (
+              {downloadOffer.product.size_mb &&
+              downloadOffer.product.size_mb >= 1000
+                ? `${(downloadOffer.product.size_mb / 1000).toFixed(1)} GB`
+                : `${downloadOffer.product.size_mb ?? "?"} MB`}
+              ) instead
+            </button>
+          </p>
+        )}
         {hiError && hiTemplateOn && (
           <p className="text-amber-300">HI profile: {hiError}</p>
         )}
