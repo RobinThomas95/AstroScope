@@ -109,6 +109,10 @@ and continuum maps, the PHANGS nebula catalogue and its segmentation mask to pic
 as the aperture, and Splatalogue look-ups for rest frequencies (AstroScope ships a fixed list of
 common mm lines).
 
+The code was developed with the assistance of **Claude** (Anthropic), working through Claude
+Code: the backend services, the frontend panels, the test suites and this guide were written
+together with it, with the live checks against the archives done by hand. Thank you, Claude.
+
 ## Requirements
 
 - **Python 3.11 or newer.** The backend uses FastAPI, Astropy, Astroquery, PyVO, mocpy, NumPy
