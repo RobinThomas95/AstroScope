@@ -1,245 +1,412 @@
 # AstroScope
 
-Astronomical target reconnaissance and multi-wavelength analysis. Type an object name or a
-coordinate pair, get its basic properties from SIMBAD / NED, and inspect it in four synchronised
-Aladin Lite v3 sky views across different surveys.
+AstroScope is a browser application for reconnaissance of one astronomical target at a time.
+Type a galaxy name or a coordinate pair and it gathers, in one page, what the Virtual
+Observatory knows about that object: its basic properties, synchronised sky views across
+surveys, every public observation of it in the ESO, MAST and ALMA archives, its 21 cm detections,
+aperture spectra extracted on demand from MUSE and ALMA cubes and overplotted on one velocity
+axis, its literature with bibliometrics, and an AI-written briefing of that literature.
 
-## Status
+It runs locally: a Python backend talks to the archives, a React frontend shows the results.
+Nothing is uploaded anywhere, and the only things written to your disk are the optional
+full-cube downloads described under [Disk use](#disk-use-and-the-cube-cache).
 
-| Module | Description | State |
-| --- | --- | --- |
-| 1 | Target resolver & basic metadata (SIMBAD TAP, NED, Sesame) | implemented |
-| 2 | Synced 2x2 Aladin Lite viewer with per-pane surveys and MOC overlays | implemented |
-| 3 | Archive cross-matching via ObsCore TAP (ESO, MAST, ALMA) + HI surveys | implemented |
-| 4 | ESO DataLink/SODA MUSE cutouts, 1D spectra, HI overplot | implemented |
-| 5 | ADS literature & bibliometrics | implemented |
-| 6 | Scientific synthesis with Google Gemini | implemented |
+## Contents
 
-## Layout
+- [What AstroScope does](#what-astroscope-does)
+- [Acknowledgements and relation to the AstroCC notebook](#acknowledgements-and-relation-to-the-astrocc-notebook)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [API keys](#api-keys)
+- [Using AstroScope](#using-astroscope)
+- [Things to keep in mind](#things-to-keep-in-mind)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Data and service credits](#data-and-service-credits)
 
-```
-backend/            FastAPI application (Python 3.11+)
-  app/main.py       app factory, CORS, routers
-  app/config.py     settings (loaded from the repo-root .env)
-  app/schemas/      Pydantic response models
-  app/services/     coords parsing, SIMBAD TAP client, NED client, resolver, survey catalog,
-                    MOCServer client, ObsCore adapters (obscore.py), STC-S parser, footprint
-                    MOC builder, HI cross-match (hi.py), SODA cutouts + spectrum extraction
-                    (muse.py), spectral lines (lines.py), HI profile template (hiprofile.py)
-  app/routers/      /api/resolve, /api/surveys, /api/overlays, /api/archives, /api/hi,
-                    /api/spectrum/muse, /api/lines, /api/hi/profile, /api/health
-  tests/            pytest suite (remote services are faked; no network needed)
-frontend/           React 18 + TypeScript + Tailwind, Vite
-  src/lib/viewSync.ts      pan/zoom/FOV synchronisation between Aladin instances
-  src/components/          TargetSearch, TargetCard, AladinGrid, AladinPane, ArchivePanel,
-                           SpectrumPanel (Plotly)
-```
+## What AstroScope does
 
-## Quick start
+**Target card.** Resolves any SIMBAD or NED identifier, or coordinates in decimal, sexagesimal
+or compact IAU form, and shows ICRS and galactic coordinates, redshift and recession velocity
+with their quality, morphological type, object type, angular size and position angle,
+redshift-independent distances, group and cluster memberships (FCC, VCC, LGG, HCG, Abell and
+others, plus groups found within one degree), and aliases. SIMBAD is the primary source, NED the
+second opinion and position fallback, CDS Sesame the last resort. When SIMBAD's redshift is of
+low quality the NED value is preferred and both are shown.
+
+**Synchronised sky viewer.** Four Aladin Lite v3 panes pan and zoom together. Each pane picks
+its own survey (Rubin First Look, DSS2, Pan-STARRS, SDSS, DECaLS, DES, GALEX, 2MASS, WISE,
+Finkbeiner Hα, XMM-Newton EPIC, Fermi LAT) and can draw coverage overlays: the all-sky coverage
+of HST, JWST, Chandra and XMM-Newton, and the footprints of the MUSE, ALMA, HST and JWST
+observations found around the current target.
+
+**Archive observations.** One search queries the ESO (MUSE, UVES, X-Shooter), MAST (HST, JWST)
+and ALMA ObsCore services in parallel and lists every public observation within the chosen
+radius, grouped by telescope and instrument, with date, exposure time, band, resolution,
+separation, release status and links to data, previews and the archive pages. ALMA spectral
+windows are merged per observation with their frequency ranges. Each archive reports its own
+status, so one slow service does not hide the others.
+
+**HI 21 cm.** Cross-matches the position against ALFALFA, HIPASS (HICAT, NHICAT) and the HIPASS
+Bright Galaxy Catalog on VizieR and reports systemic velocity, W50, W20, integrated flux, S/N,
+distance and HI mass where available.
+
+**Spectrum.** The Spectrum tab lists the cubes of the current search by source. A MUSE cube is
+cut out server-side by ESO's SODA service around a circular aperture at the target and
+integrated into a 1-D spectrum with its error. An ALMA observation is opened to its
+spectral-window products, the window that holds the chosen line at the target's velocity is
+marked, and an aperture cutout spanning the line is fetched from ALMA's SODA service; only when
+no ALMA mirror serves a cutout can the full product be downloaded, with a progress bar. Any
+number of traces are overplotted: in wavelength, or on a common velocity axis about Hα (optical
+convention) and CO(2–1) or another mm line (radio convention), relative to the systemic
+velocity, with independently normalised amplitudes for shape comparison. Redshifted optical and
+mm line markers, a catalogue-derived HI double-horn template or an uploaded HI profile join the
+same axis. Every plotted item can be hidden or removed.
+
+**Literature.** With a NASA ADS token, finds the papers on the target and its aliases and
+computes papers per year, facilities used (ADS facility field plus about seventy telescope and
+instrument patterns), keyword frequencies, citation distribution, total citations and h-index.
+Facility chips isolate, say, the ALMA or MUSE papers in the histogram, and the table links to ADS.
+
+**Synthesis.** With a Google Gemini key, sends the abstracts of the most cited and most recent
+papers plus the statistics to Gemini and returns a structured briefing: summary, established
+properties, peculiarities and open questions, key papers with reasons, keyword clusters,
+facilities and their role, and the publication trend. Citations the model invents are flagged.
+
+## Acknowledgements and relation to the AstroCC notebook
+
+AstroScope grew out of the ESO Archive tutorial notebook *"ESO and ALMA Archives: A Science Case
+Using VO Services"* by Ashley Barnes and Juan M. Carmona Loaiza (ESO Archive Science Group),
+presented at the **Astro-CC Scientific Training event** at the Observatoire astronomique de
+Strasbourg in October 2026. That notebook demonstrated the workflow this application
+generalises: resolve a galaxy, find its PHANGS MUSE and ALMA data, request **ESO SODA** and
+**ALMA SODA** cutouts around one region, and compare MUSE Hα with ALMA CO(2–1) on a common
+velocity axis. The SODA request forms AstroScope sends to ESO (`dataportal.eso.org/dataPortal/
+soda/sync`) and ALMA (`almascience.eso.org/soda/sync`, `REQUEST=queryData` with `POS=CIRCLE` and
+`BAND`) follow the notebook's helpers, and the ALMA product selection, which matches the window
+by frequency and the ARI-L file name, follows its `select_alma_science_cube`.
+
+What AstroScope adds to that workflow:
+
+- Any target, not one hard-coded galaxy: identifiers or coordinates, with SIMBAD, NED and Sesame
+  fallbacks and a quality-aware choice of redshift.
+- A four-pane synchronised Aladin viewer with survey and coverage overlays, instead of static
+  linked panels.
+- Archive discovery across ESO, MAST and ALMA at once through ObsCore, grouped by telescope and
+  instrument, with footprints drawn on the sky, plus HI catalogue cross-matching.
+- Automatic selection of the ALMA spectral window holding the chosen line, with mask, primary
+  beam and calibrator cubes recognised and kept out of the way, and tar packages expanded.
+- Aperture spectra from any number of MUSE and ALMA cubes, with error propagation from the MUSE
+  STAT extension, both velocity conventions, redshifted line markers, HI templates and uploads,
+  and interactive Plotly plots.
+- Bibliometrics and an AI synthesis of the literature.
+- A full-download fallback with progress reporting, memory-mapped extraction and a managed disk
+  cache for the rare products without a SODA cutout.
+
+Things the notebook does that AstroScope does not yet: band-only MUSE cutouts collapsed into Hα
+and continuum maps, the PHANGS nebula catalogue and its segmentation mask to pick an HII region
+as the aperture, and Splatalogue look-ups for rest frequencies (AstroScope ships a fixed list of
+common mm lines).
+
+## Requirements
+
+- **Python 3.11 or newer.** The backend uses FastAPI, Astropy, Astroquery, PyVO, mocpy, NumPy
+  and Pandas; they are installed into a virtual environment by the setup step.
+- **Node.js 18 or newer** with npm, for the frontend (React, Vite, Aladin Lite, Plotly).
+- **make** and **git**. On Windows use WSL, or run the commands listed under
+  [Without make](#without-make) in PowerShell.
+- **Internet access** to CDS (SIMBAD, VizieR, Aladin HiPS, MOCServer), NED, ESO, ALMA, MAST and,
+  optionally, ADS and Google. All archive services are used anonymously; no account is needed.
+- Any modern browser. The viewer uses WebGL.
+
+The machine does not need to be powerful: spectra are cut out server-side at the archives and
+arrive as a few megabytes.
+
+## Installation
+
+### 1. Get the code
 
 ```bash
-cp .env.example .env            # optional server-side ADS / Gemini keys (see "API keys" below)
-make setup                      # python venv + npm install (picks the first Python 3.11+ on PATH)
-# make setup PY=python3.12      # or name the interpreter explicitly, e.g. inside a conda env
-make backend                    # http://localhost:8000  (OpenAPI docs at /docs)
-make frontend                   # http://localhost:5173  (proxies /api to the backend)
+git clone https://github.com/sardarkagrandson/know-your-object.git
+cd know-your-object
 ```
 
-Then open http://localhost:5173 and resolve e.g. `NGC 1365`, `M 87`, `03h33m36.4s -36d08m25s`
-or `187.706, 12.391`.
+### 2. Provide Python 3.11+ and Node 18+
 
-Run the tests with `make test` (backend: pytest, frontend: vitest) and `make lint`.
+If `python3 --version` and `node --version` already satisfy the requirements, skip ahead. With
+conda, the simplest route is one environment holding both:
 
-## API
+```bash
+conda create -n astroscope python=3.12 nodejs=22 -c conda-forge
+conda activate astroscope
+```
 
-### `GET /api/resolve?q=<name or coordinates>[&refresh=true]`
+### 3. Install the dependencies
 
-Resolves the target and returns (see `backend/app/schemas/target.py`):
+```bash
+make setup
+```
 
-- `coordinates`: ICRS RA/Dec in degrees and sexagesimal, galactic l/b, and which service provided them
-- `kinematics`: redshift `z`, recessional velocity `cz` in km/s, errors, measurement type
-- `morphology`: morphological type (e.g. `SB(s)b`), SIMBAD object type and label, major/minor axis, PA
-- `distances`: redshift-independent distances from SIMBAD's `mesDistance` table
-- `environment`: cataloged group/cluster memberships (identifiers from FCC, VCC, LGG, HCG, Abell, ...)
-  and galaxy groups/clusters/pairs found by a 1 degree SIMBAD cone search
-- `aliases`, `sources`, `warnings`, `suggested_fov_deg`
+This creates `.venv` with the backend and its development tools, and runs `npm install` in
+`frontend/`. The Makefile picks the first Python 3.11+ interpreter on your PATH; to name one
+explicitly use `make setup PY=python3.12`. If `.venv` already exists but was created with an
+older Python, it is replaced.
 
-Accepted inputs: any SIMBAD/NED identifier, decimal degrees (`53.40 -36.14`), sexagesimal
-(`03h33m36.4s -36d08m25s`, `03:33:36.4 -36:08:25`, `03 33 36.4 -36 08 25`) or compact IAU form
-(`J033336.4-360825`). Coordinates are matched to the nearest SIMBAD object within 30 arcsec.
+### 4. Optional: a `.env` file
 
-Resolution strategy: SIMBAD TAP (explicit ADQL via pyvo) is the primary source; NED provides an
-independent name/redshift and is the position fallback; CDS Sesame is the last-resort position
-fallback. Every remote call is isolated, so an outage of one service appears in `warnings` instead
-of failing the request. Results are cached in memory for `ASTROSCOPE_CACHE_TTL` seconds.
+```bash
+cp .env.example .env
+```
 
-### `GET /api/surveys`
+Everything runs without it. Edit it to set server-side API keys (see [API keys](#api-keys)),
+change ports, timeouts or the cube cache location. The backend reads it on start-up.
 
-The HiPS surveys offered per pane, the coverage (MOC) overlays, and the default 2x2 layout.
-Edit `backend/app/services/surveys.py` to change them.
+### 5. Run
 
-### Coverage overlays: `GET /api/overlays`, `GET /api/overlays/{id}/moc`
+In one terminal:
 
-Aladin Lite's `A.MOCFromURL` needs a FITS MOC, so overlays are served by the backend rather than
-fetched from CDS directly. For each overlay the backend searches the CDS MOCServer with the
-expressions listed in `surveys.py` (tried in order, e.g. `ID=ESAVO/P/JWST/*`), takes every
-matching record with non-zero coverage, downloads each MOC as FITS, unions them with mocpy and
-caches the result for a day. `GET /api/overlays` shows which records each overlay resolved to,
-which is the first thing to check when an overlay shows "failed" in a pane's MOC menu.
+```bash
+make backend        # FastAPI on http://localhost:8000, interactive API docs at /docs
+```
 
-The MOCServer has no single all-observations record for HST or JWST, so those overlays union
-ESA's per-instrument image coverage maps. It holds no downloadable coverage at all for the MUSE
-and ALMA cube collections, so MUSE and ALMA footprints are derived per target from the ESO and
-ALMA ObsCore services in the archive module instead.
+In another:
 
-### `GET /api/archives?ra=&dec=&radius_arcmin=[&archives=eso,mast,alma]`
+```bash
+make frontend       # Vite dev server on http://localhost:5173, proxies /api to the backend
+```
 
-Queries the ESO (`ivoa.ObsCore`, MUSE / UVES / X-Shooter), MAST (`dbo.CaomObservation`, HST and
-JWST) and ALMA (`ivoa.obscore`, science observations) TAP services in parallel and normalises
-the rows: instrument, observation date, integration time, spectral band, spatial resolution,
-footprint (`s_region`), data / preview / archive links, proposal and release status. Each
-archive reports its own status so one outage does not hide the others. ESO and ALMA are searched
-with `INTERSECTS` on the footprint (falling back to a centre-point search if a service rejects
-it); MAST with a centre-point search.
+Open http://localhost:5173 and resolve `NGC 1365`, `M 87`, `03h33m36.4s -36d08m25s` or
+`187.706, 12.391`.
 
-### `GET /api/archives/{archive}/footprints/moc?ra=&dec=&radius_arcmin=[&instrument=|&collection=]`
+### Updating
 
-The union of the matching observations' footprints as a FITS MOC, built from the STC-S regions
-with mocpy. The viewer's "footprints around the target" overlays (MUSE, ALMA, HST, JWST) use this.
+```bash
+git pull
+make setup          # only needed when dependencies changed; harmless otherwise
+```
 
-### `GET /api/hi?ra=&dec=[&radius_arcmin=]`
+then restart both servers. The frontend dev server reloads code changes by itself; the backend
+restarts itself on code changes but not on `.env` changes.
 
-Cross-matches the position against ALFALFA α.100 (`J/ApJ/861/49`), HIPASS HICAT (`VIII/73`),
-the northern HIPASS catalogue NHICAT (`VIII/89`) and the HIPASS Bright Galaxy Catalog
-(`J/AJ/128/16`) on VizieR, within half the survey beam (minimum 3 arcmin) unless a radius is
-given. (The Springob+ 2005 digital HI archive is not hosted on VizieR.) Returns heliocentric velocity, W50, W20, integrated
-21 cm flux, S/N, distance and log M_HI where the catalogue provides them.
+### Without make
 
-### `GET /api/spectrum/muse?datalink_url=&ra=&dec=[&radius_arcsec=3&method=sum|mean&band_min_A=&band_max_A=]`
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -e "backend[dev]"
+cd frontend && npm install && cd ..
+# run (two terminals)
+cd backend && ../.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+cd frontend && npm run dev
+```
 
-Requests a spatial (and optionally spectral) cutout of a public MUSE cube through the cube's ESO
-DataLink document and its SODA service (pyvo), then integrates the cube over a circular aperture
-at the target position: wavelength array (Å), flux, 1σ error from the STAT extension, flux unit
-from `BUNIT`, number of spaxels, pixel scale, and cube provenance. Only ESO DataLink URLs are
-accepted, the aperture is capped at 30″, datasets without a SODA service are refused (no
-full-cube downloads), and cutouts/spectra are cached in memory.
+On Windows replace `.venv/bin/` with `.venv\Scripts\`.
 
-### `GET /api/lines?z=&wmin=&wmax=` and `GET /api/hi/profile?ra=&dec=`
+### Production build
 
-`/api/lines` returns common optical lines (Balmer, [OIII], [NII], [SII], Na D, Ca triplet, ...)
-redshifted to `z` and restricted to an observed window. `/api/hi/profile` builds a symmetric
-double-horn 21 cm profile from the nearest catalogued HI detection (systemic velocity, W50, W20,
-integrated flux). It is a template for overplotting, clearly labelled as such; an observed
-profile can be uploaded in the UI as a two-column (velocity, flux) text file.
+`make build` writes a static frontend into `frontend/dist`. Serve it with any web server and
+point it at the backend with `VITE_API_BASE_URL` at build time, and list the frontend's origin in
+`ASTROSCOPE_CORS_ORIGINS` on the backend.
 
-### `GET /api/cubes/products` and `GET /api/spectrum/cube` (ALMA)
+## API keys
 
-For an ALMA observation the backend lists the FITS cube products in its DataLink document (one
-per spectral window; the contents of tar packages are listed through ALMA's nested DataLink
-documents, as `astroquery.alma.get_data_info(expand_tarfiles=True)` does), marks the window that
-contains the chosen line at the target's redshift, and extracts the same aperture spectrum with
-a frequency axis. Extraction runs as a background job the browser polls. It first asks the ALMA
-**SODA** service (`https://almascience.eso.org/soda/sync?REQUEST=queryData&ID=<product>&POS=CIRCLE
-...&BAND=<metres>`, the product's own mirror first, then the others) for an aperture cutout
-spanning the chosen line ± twice the velocity window: a few MB, seconds, nothing on disk. Only
-when no mirror serves a cutout does it download the full product (progress bar with MB
-downloaded), memory-map it and read just the pixel box around the aperture; gzipped products are
-unpacked once. Frequency and velocity cube axes (FREQ, VRAD, VOPT) are handled; 4-D cubes use
-the first Stokes plane. The footnote under the plot says which path was used.
+The target card, viewer, archives, HI and spectrum features need no keys. Two features do:
 
-Fully downloaded ALMA cubes are the only thing written to disk (SODA cutouts, MUSE cutouts and
-every spectrum stay in memory). They are kept in a cache so a second extraction is instant:
-`ASTROSCOPE_CUBE_CACHE_DIR` (default `<system temp>/astroscope-cubes`), the oldest files are
-deleted once it exceeds `ASTROSCOPE_CUBE_CACHE_GB` (default 4 GB), and the Spectrum tab header
-shows the usage with a "clear cache" button (`GET`/`DELETE /api/cubes/cache`). The server-side download cap
-`ASTROSCOPE_CUBE_MAX_MB` (default 600 MB) is overridden per request by the product's own size.
-`GET /api/lines/radio` lists common mm lines (CO, 13CO, HCN, HCO+, [CI], ...) redshifted.
+| Feature | Key | Where to get it |
+| --- | --- | --- |
+| Literature | NASA ADS API token | https://ui.adsabs.harvard.edu/user/settings/token (free, with a daily query quota) |
+| Synthesis | Google Gemini API key | https://aistudio.google.com/apikey (free tier) |
 
-### Spectrum tab
+There are two ways to provide them:
 
-The left column lists everything that can be plotted for the current search: ALMA cubes
-("products" lists the spectral-window cubes of that observation, science cubes first with the
-window holding the chosen line marked), MUSE cubes ("extract" runs the SODA cutout), HI 21 cm
-catalogue detections ("template" draws a double-horn profile from Vsys, W50, W20 and flux) and
-an upload button for your own HI spectrum. Plotted traces sit at the top with a checkbox to
-hide each one. The "spectrum" buttons in the observation table do the same thing. HST and JWST
-products are not listed here because MAST offers no cutout service.
+- **In the browser.** Press **keys** in the page header and paste them. They are kept in your
+  browser's local storage and sent with each request as headers; the server never stores them.
+  This is how a shared or public instance should run: every user brings their own keys and uses
+  their own quota.
+- **On the server.** Set `ADS_DEV_KEY` and `GEMINI_API_KEY` in `.env` as defaults for every user
+  of that instance. A key pasted in the browser overrides the server default.
 
-Any number of traces (MUSE via SODA, ALMA via product cubes) can be overplotted. In velocity
-mode each optical trace is placed on a velocity axis about the chosen optical line (Hα by
-default, optical convention) and each radio trace about the chosen mm line (CO(2–1) by default,
-radio convention), optionally relative to the systemic velocity, within an adjustable window.
-"Normalise amplitudes" scales every trace to its own peak inside the window so line shapes can
-be compared directly; the fluxes, angular resolutions and calibrations of the traces are not
-comparable and the panel says so. The HI profile (catalogue template or an uploaded two-column
-file) joins the same axis. The Spectrum and Literature panels keep their state across tab
-switches.
+The Gemini model is chosen automatically (`GEMINI_MODEL=auto` picks the newest stable Flash model
+the key can use); the keys dialog lists the models available to your key if you want another.
 
-## Viewer synchronisation
+## Using AstroScope
 
-Aladin Lite v3 has no built-in view linking, so `frontend/src/lib/viewSync.ts` implements it on
-top of the public callbacks: each pane reports `positionChanged` / `zoomChanged`, and the
-controller pushes the new centre and field of view to the other panes with `gotoRaDec` /
-`setFoV`. Programmatic writes echo back through the same callbacks (sometimes synchronously,
-sometimes from the render loop), so the controller mutes a pane while writing to it and then
-drops callbacks that merely repeat the last state it pushed. A toggle disables sync; re-enabling
-snaps all panes to the pane that was navigated last.
+1. **Resolve a target** in the search box. The card on the left fills with its properties and
+   the four panes centre on it at a field of view suited to its size. "Recentre on target" and
+   "Set FOV" bring the view back after you have wandered.
+2. **Pick surveys** per pane from the drop-down above each one. The **MOC** menu of a pane
+   draws coverage overlays; the "footprints around the target" entries appear once the archive
+   search has run.
+3. **Archive observations** runs automatically for the resolved target with the radius shown at
+   the right of the panel (change it and press Search). Expand telescopes and instruments, sort
+   by date, exposure or separation, filter by instrument, and use the links. "spectrum" on a
+   MUSE or ALMA cube row jumps to the Spectrum tab with that cube selected.
+4. **HI 21 cm** lists the catalogue detections near the target.
+5. **Spectrum.** The left column groups what can be plotted:
+   - **ALMA cubes**: open an observation to see its spectral-window products. "line" marks the
+     window holding the chosen line at the target's velocity (change the line in the group
+     header); "other" windows can still be extracted. Auxiliary (mask, primary beam, psf) and
+     calibrator cubes sit behind a link. Press **extract**.
+   - **MUSE cubes**: press **extract**. If the target lies outside a cube's footprint the panel
+     says so and offers extraction at the cube centre.
+   - **HI 21 cm**: **template** draws a double-horn profile from the catalogue values;
+     **upload HI spectrum** takes your own two-column (velocity km/s, flux) text file.
+   - **Plotted** lists every trace with a checkbox to hide it and a cross to remove it; the same
+     controls repeat under the plot.
+   The aperture radius and sum-or-mean choice sit in the header. The row of controls switches
+   between wavelength and velocity axes, sets the reference lines, the systemic velocity (from
+   the resolver, an HI catalogue, or typed in), the velocity window and the amplitude
+   normalisation, and toggles line markers.
+6. **Literature** needs an ADS token. The chips above the histogram isolate facilities; the
+   table lists the papers with ADS links.
+7. **Synthesise**, in the Literature tab, needs a Gemini key and uses the papers already found.
 
-## API keys (Modules 5 and 6)
+## Things to keep in mind
 
-Modules 1–4 need no keys. The literature module needs a NASA ADS token (free, from
-https://ui.adsabs.harvard.edu/user/settings/token) and the synthesis module a Google Gemini API
-key (free tier, from https://aistudio.google.com/apikey). There are two ways to provide them:
+- **Search radius and speed.** ESO and ALMA answer in seconds; MAST can take one to two minutes
+  for well-studied galaxies and its chip shows "querying…" meanwhile. A 5′ radius is a good
+  start; large radii around famous targets return hundreds of HST rows.
+- **Systemic velocity.** Line markers, "contains line" and the velocity axis depend on cz. The
+  control row shows where it came from (resolver, HI catalogue, manual). SIMBAD sometimes carries
+  a low-quality redshift; the card shows NED's value next to it, and you can type any cz.
+- **SODA cutouts and the band.** An ALMA cutout spans the chosen line ± twice the velocity
+  window (at least ±2000 km/s). If you later widen the window beyond the cutout, extract again.
+  The footnote under the plot says whether a trace came from a SODA cutout or a full download,
+  and which band.
+- **Normalised amplitudes compare shapes only.** Fluxes, beam sizes, pixel scales and
+  calibrations differ between MUSE, ALMA and HI; the panel says so when normalisation is on.
+  Optical traces use the optical Doppler convention about the chosen optical line, radio traces
+  the radio convention about the mm line.
+- **The HI template is synthetic.** It is a symmetric double-horn profile built from the
+  catalogue's Vsys, W50, W20 and integrated flux, labelled as such. Upload an observed profile
+  for real comparisons.
+- **Apertures on bright nuclei.** An ALMA spectrum that dips below zero at the systemic velocity
+  in a small aperture on a galaxy nucleus is usually the interferometric negative bowl or real
+  absorption against the continuum, not an extraction fault. Try "mean per spaxel" or an offset
+  position.
+- **Interferometric cubes are large.** When no ALMA mirror serves a cutout, products above
+  500 MB are not downloaded without your say-so: the error names each mirror's reply and offers
+  the full download as a button.
+- **Keys in the browser** stay on that machine and browser profile. Clearing site data removes
+  them.
 
-- **Per user, in the browser**: the "keys" button in the header opens a dialog; keys are kept in
-  the browser's local storage and sent as request headers (`X-ADS-Token`, `X-Gemini-Key`). The
-  server never stores them. This is the mode for a public instance: every visitor uses their own
-  free keys and their own ADS quota.
-- **Server defaults** in `.env` (`ADS_DEV_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL`): convenient
-  for a private instance. A key pasted in the browser overrides the server default.
+### Disk use and the cube cache
 
-`GET /api/keys/status` reports which server defaults exist; `GET /api/llm/models` validates a
-Gemini key and lists the models it can use.
+MUSE cutouts, ALMA cutouts and all spectra are held in memory only. The one thing AstroScope
+writes to disk is an ALMA product downloaded in full when no SODA cutout was available. Those
+files go to `astroscope-cubes` under your system temp directory (or `ASTROSCOPE_CUBE_CACHE_DIR`),
+are capped at `ASTROSCOPE_CUBE_CACHE_GB` (default 4 GB, oldest deleted first), and are listed in
+the Spectrum tab header with a **clear cache** button. Gzipped products keep only the unpacked
+copy.
 
-### `GET /api/literature?q=&names=&refereed=&max_rows=`
+## Configuration
 
-Searches ADS for the target and its catalogue aliases (`object:` and `abs:` fields, astronomy
-collection, optionally refereed only), pages through up to 2000 records, and computes the
-bibliometrics server-side: papers per year (total and refereed), facilities mentioned (ADS
-`facility` field plus pattern matching of ~70 telescopes/instruments in titles, abstracts and
-keywords), keyword frequencies, citation distribution, total citations, h-index, most cited and
-most recent papers. The Literature tab plots the year histogram with facility chips that isolate
-e.g. HST, MUSE, ALMA, GMRT or MeerKAT, the citation distribution, and the paper table with ADS
-links.
+All settings live in `.env` at the repository root (see `.env.example`). The main ones:
 
-### `POST /api/synthesis`
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ADS_DEV_KEY` | empty | Server-side ADS token |
+| `GEMINI_API_KEY` | empty | Server-side Gemini key |
+| `GEMINI_MODEL` | `auto` | Gemini model, or `auto` for the newest stable Flash |
+| `ASTROSCOPE_PORT` | `8000` | Backend port |
+| `ASTROSCOPE_CORS_ORIGINS` | the Vite dev origins | Origins allowed to call the API |
+| `ASTROSCOPE_REMOTE_TIMEOUT` | `45` | Seconds allowed per remote call (MAST gets more) |
+| `ASTROSCOPE_CACHE_TTL` | `3600` | Seconds to keep resolver and archive answers |
+| `ASTROSCOPE_SIMBAD_TAP_URL` | CDS | SIMBAD TAP endpoint (a mirror can be set) |
+| `ASTROSCOPE_MAST_TAP_URL` | auto | Force a MAST TAP endpoint |
+| `ASTROSCOPE_CUBE_CACHE_DIR` | system temp | Where full ALMA downloads are kept |
+| `ASTROSCOPE_CUBE_CACHE_GB` | `4` | Cache size before the oldest files are deleted |
+| `ASTROSCOPE_CUBE_MAX_MB` | `600` | Default download cap; the app passes the product's own size |
+| `VITE_API_BASE_URL` | empty | Backend URL for a production frontend build |
 
-Selects abstracts (top cited plus most recent refereed, up to `max_abstracts`), sends them with
-the computed statistics to Gemini in JSON mode with a fixed response schema, and returns: a
-summary; consensus / established properties; peculiarities and open questions; key papers with
-reasons; keyword clusters by theme; facilities and their role; a reading of the publication trend.
-Bibcodes cited by the model that were not among the supplied abstracts are flagged in
-`warnings`. Results are cached per target, model and abstract set.
+The surveys and overlays offered in the viewer are listed in `backend/app/services/surveys.py`.
 
-## Notes for verification
+## Troubleshooting
 
-The development sandbox used to build this could not reach CDS, SIMBAD or NED, so the resolver
-is tested against faked service responses. The first live run should confirm:
+**`make setup` complains about Python, or installs into the wrong one.** It needs 3.11+. Create
+one (`conda create -n astroscope python=3.12`) and run `make setup PY=python3.12`, or activate
+the environment first. A `.venv` built with an old Python is replaced automatically.
 
-1. `GET /api/resolve?q=NGC%201365` returns `main_id = "NGC  1365"`, z ~ 0.0055, type `SB(s)b`,
-   and `FCC 121` under environment memberships.
-2. `GET /api/overlays` reports `resolved: true` for each overlay and ticking one in a pane draws
-   coverage (verified live for HST, JWST, Chandra and XMM-Newton).
-3. `GET /api/archives?ra=53.4015&dec=-36.1404&radius_arcmin=5` returns MUSE, HST, JWST and ALMA
-   observations of NGC 1365 with `status: ok` for all three archives, and the MUSE footprint
-   overlay draws the PHANGS-MUSE mosaic. The adapters were built against the public column
-   names of each service and tested with canned rows; the MAST table name
-   (`dbo.CaomObservation`) and the ALMA/ESO `INTERSECTS` support are the parts to confirm live.
-4. `GET /api/hi?ra=53.4015&dec=-36.1404` lists HIPASS detections for NGC 1365 (ALFALFA does
-   not cover Dec −36).
-5. In the Spectrum tab's source column (or the observation list), extract a public MUSE cube of NGC 1365: the Spectrum tab
-   should show a 4750–9350 Å spectrum with Hα, [NII] and [SII] marked near 6600 Å (verified live).
-6. With an ADS token set, the Literature tab lists several hundred refereed papers on NGC 1365
-   with a year histogram; with a Gemini key, "synthesise" returns the structured briefing.
-   Both services were exercised offline with canned responses; the first live calls confirm the
-   ADS query syntax and the Gemini JSON-schema mode for the configured model.
+**`npm: command not found`.** Install Node 18+ (`conda install -c conda-forge nodejs=22`, or from
+nodejs.org) and rerun `make setup`.
+
+**The page loads but nothing resolves, or "catalog" errors appear.** The backend is not running
+or not on port 8000. Start `make backend` and check http://localhost:8000/api/health, which also
+reports whether server-side keys are set.
+
+**Port already in use.** Change `ASTROSCOPE_PORT` in `.env` and start the frontend with
+`ASTROSCOPE_API_URL=http://localhost:<port> make frontend`, or stop the other process.
+
+**An overlay shows "failed" in a pane's MOC menu.** Open http://localhost:8000/api/overlays: each
+overlay lists the CDS MOCServer records it resolved to. Coverage is fetched from CDS and cached
+for a day, so a transient CDS outage clears itself. The MUSE and ALMA footprint overlays need
+the archive search to have run first.
+
+**An archive reports an error or times out.** The chip on the Archive tab names the archive and
+the message. MAST is slow for famous targets; raise `ASTROSCOPE_REMOTE_TIMEOUT` if it times out
+regularly. `backend/scripts/archive_diag.py` runs the three queries from the command line and
+prints what each service returns.
+
+**"SODA returned no data (HTTP 204)".** The aperture lies outside that cube's footprint or, for
+ALMA, outside its spectral range. Extract at the cube centre, choose a cube marked "covers
+target", or pick the window marked "line".
+
+**"ALMA SODA cutout failed" with HTTP codes per mirror.** ALMA refused the cutout for that
+product. Run the command printed under the error, `backend/scripts/alma_soda_diag.py`, to see
+each mirror's reply, or press the button to download the product in full.
+
+**An ALMA observation lists no science cube.** Some observations only expose mask, primary-beam
+or calibrator cubes, or tar packages; the panel says which. Those cubes can still be extracted
+but are not the target's flux.
+
+**The literature tab says 401 or 429.** 401: the ADS token is wrong or expired, paste a new one in
+the keys dialog. 429: the daily ADS quota of that token is used up.
+
+**Synthesis says the model is unavailable.** Gemini retires model names from time to time.
+Leave the model on `auto`, or pick one from the list in the keys dialog.
+
+**ESO answers 502 or 503 on a MUSE cutout.** ESO's data portal does this when a cutout job times
+out behind its proxy; AstroScope retries a few times. Try again in a minute, or a smaller
+aperture.
+
+**Plots look empty or overlap after resizing.** Switch tabs once; Plotly re-measures the panel.
+
+Diagnostic scripts in `backend/scripts/` (run them with `.venv/bin/python`): `archive_diag.py`
+(ObsCore queries), `hi_diag.py` (VizieR HI catalogues), `moc_diag.py` (coverage records),
+`soda_diag.py` (an ESO DataLink document and its SODA request), `alma_soda_diag.py` (ALMA SODA
+replies per mirror).
+
+## Development
+
+```
+backend/app/        FastAPI application: routers (/api/...), services (one per remote
+                    service), schemas (Pydantic models), config
+backend/tests/      pytest suite; remote services are faked, no network needed
+backend/scripts/    diagnostic scripts
+frontend/src/       React + TypeScript + Tailwind; lib/ holds the API client, key storage
+                    and the Aladin view synchroniser; components/ the panels
+```
+
+- `make test` runs the backend (pytest) and frontend (vitest) suites; `make lint` runs ruff and
+  the TypeScript compiler.
+- The backend serves interactive API documentation at http://localhost:8000/docs.
+- Aladin Lite v3 has no built-in view linking; `frontend/src/lib/viewSync.ts` implements it on
+  the public callbacks with echo suppression.
+
+## Data and service credits
+
+AstroScope only works because these services exist and are open:
+
+- **CDS, Strasbourg**: SIMBAD, VizieR, Sesame, the MOCServer, HiPS surveys and Aladin Lite.
+- **NASA/IPAC Extragalactic Database (NED)**.
+- **ESO Science Archive**: the ObsCore TAP service, DataLink and the **SODA** cutout service for
+  MUSE cubes, and the AstroCC tutorial that showed how to use them.
+- **ALMA Science Archive** and its mirrors at ESO, NRAO and NAOJ: ObsCore, DataLink and the
+  **SODA** cutout service; ARI-L products.
+- **MAST** (STScI): the CAOM TAP service for HST and JWST.
+- **NASA ADS** for the literature, **Google Gemini** for the synthesis.
+- ALFALFA, HIPASS and the HIPASS Bright Galaxy Catalog teams for the HI catalogues.
+
+Please acknowledge these services in any work that uses what AstroScope shows you, following
+each service's own acknowledgement guidelines.
